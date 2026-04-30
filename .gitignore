@@ -8,8 +8,8 @@ venv/
 # Model dosyaları (büyük olduğu için)
 *.pt
 *.pth
-*.onnx
-
+*.pth.tar
+models/
 # Docker volumes
 postgres_data/
 
