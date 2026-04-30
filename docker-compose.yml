@@ -1,0 +1,81 @@
+version: "3.9"
+
+networks:
+  drone_net:
+    driver: bridge
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: drone_postgres
+    environment:
+      POSTGRES_DB: dronedb
+      POSTGRES_USER: drone
+      POSTGRES_PASSWORD: drone_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - drone_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drone -d dronedb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  inference-service:
+    build:
+      context: ./services/inference-service
+      dockerfile: Dockerfile
+    container_name: drone_inference
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: dronedb
+      POSTGRES_USER: drone
+      POSTGRES_PASSWORD: drone_secret
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - drone_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./services/inference-service/app:/app/app
+
+  video-stream-service:
+    build:
+      context: ./services/video-stream-service
+      dockerfile: Dockerfile
+    container_name: video_stream
+    environment:
+      STREAM_SOURCE: "0"
+      FRAME_SKIP: "5" #5 FRAMEDE BİR KARE İŞLE
+      DEFAULT_MODEL: "yolov8"
+      CONFIDENCE_THRESHOLD: "0.4"
+      INFERENCE_SERVICE_URL: "http://inference-service:8001/api/v1/infer/sync" #docker network
+      INFERENCE_TIMEOUT: "10"
+    ports:
+      - "8002:8002"
+    depends_on:
+      - inference-service
+    networks:
+      - drone_net
+    volumes:
+      - ./services/video-stream-service/app:/app/app
+    #devices:
+    #  - "/dev/video0:/dev/video0" # Kamerayı konteynere bağla
+
+
+
+volumes:
+  postgres_data:
