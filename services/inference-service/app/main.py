@@ -1,5 +1,9 @@
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware 
 from app.database import init_db, get_connection
 import torch
 import uuid
@@ -8,6 +12,13 @@ import numpy as np
 from ultralytics import YOLO
 
 app=FastAPI(title="Inference Service",version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 models={}
 
@@ -65,26 +76,23 @@ def health():
         "models_loaded": list(models.keys())
     }
 
+executor = ThreadPoolExecutor(max_workers=2)
+
 @app.post("/api/v1/infer/sync")
-async def infer_sync(file: UploadFile,model_name:str="yolov8"):
+async def infer_sync(file: UploadFile, model_name: str = "yolov8"):
     if model_name not in models:
         raise HTTPException(status_code=400, detail="Model not found")
-    
-    contents =await file.read()
-    np_arr =np.frombuffer(contents, np.uint8)
-    frame= cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
+    contents = await file.read()
+    np_arr = np.frombuffer(contents, np.uint8)
+    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     if frame is None:
         raise HTTPException(status_code=400, detail="Görüntü okunamadı")
-    
-    frame_id=str(uuid.uuid4())
-    detections=_run_inference(model_name,frame,frame_id)
-
-    return JSONResponse({
-        "frame_id": frame_id,
-        "model_name": model_name,
-        "detections": detections
-    })
+    frame_id = str(uuid.uuid4())
+    loop = asyncio.get_event_loop()
+    detections = await loop.run_in_executor(
+        executor, _run_inference, model_name, frame, frame_id
+    )
+    return JSONResponse({"frame_id": frame_id, "model_name": model_name, "detections": detections})
 
 def _run_inference(model_name:str, frame: np.ndarray, frame_id:str):
     detections=[]
@@ -102,7 +110,7 @@ def _run_inference(model_name:str, frame: np.ndarray, frame_id:str):
                     }
                 }
                 detections.append(det)
-                _save_detection(frame_id, model_name, det)
+                #_save_detection(frame_id, model_name, det)
 
     elif model_name=="yolov8":
         results = models["yolov8"](frame, conf=0.4)
@@ -118,7 +126,7 @@ def _run_inference(model_name:str, frame: np.ndarray, frame_id:str):
                     }
                 }
                 detections.append(det)
-                _save_detection(frame_id, model_name, det)
+                #_save_detection(frame_id, model_name, det)
     elif model_name=="faster_rcnn":
         import torchvision.transforms as T
         transform = T.ToTensor()
@@ -143,7 +151,7 @@ def _run_inference(model_name:str, frame: np.ndarray, frame_id:str):
                 }
             }
             detections.append(det)
-            _save_detection(frame_id, model_name, det)
+            #_save_detection(frame_id, model_name, det)
 
     return detections
 
