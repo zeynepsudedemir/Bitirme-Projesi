@@ -48,70 +48,102 @@ def _safe_gradcam_computation(act: torch.Tensor, grad: torch.Tensor) -> np.ndarr
 
 def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.ndarray:
     """
-    YOLOv8 GradCAM - shows model focus using feature maps from backbone.
-    Uses hook to capture backbone layer outputs (full model attention, not just detections).
+    YOLOv8 GradCAM - shows model focus on DETECTED OBJECTS.
+    Uses hooks on multiple detection-relevant layers for object-focused attention.
     """
     h, w = frame_bgr.shape[:2]
 
     try:
-        # Store features captured by hook
-        features_captured = []
+        # Store features from multiple layers for weighted combination
+        features_multi = []
         
-        def hook_fn(module, input, output):
-            if isinstance(output, torch.Tensor):
-                features_captured.append(output.detach())
-            elif isinstance(output, (list, tuple)):
-                for item in output:
-                    if isinstance(item, torch.Tensor):
-                        features_captured.append(item.detach())
-                        break
+        def hook_fn_factory(layer_idx):
+            """Factory to create hooks that capture layer index"""
+            def hook_fn(module, input, output):
+                if isinstance(output, torch.Tensor):
+                    features_multi.append({
+                        'layer': layer_idx,
+                        'feat': output.detach()
+                    })
+            return hook_fn
         
-        # ultralytics YOLO structure:
-        # model -> YOLO object
-        # model.model -> DetectionModel (the actual PyTorch module)
-        # model.model.model -> nn.Sequential with backbone + head
-        if hasattr(model, 'model') and hasattr(model.model, 'model'):
-            # Hook on the first layer of the backbone
-            backbone_layers = model.model.model
-            target_layer = backbone_layers[0]
-            hook = target_layer.register_forward_hook(hook_fn)
-        else:
-            print("[GRADCAM YOLO] Model structure not recognized")
-            return np.zeros((h, w, 3), dtype=np.uint8)
+        backbone_model = None
+        hook_handles = []
         
         try:
-            # Use predict method like in main.py (avoids dataset validation)
+            if hasattr(model, 'model') and hasattr(model.model, 'model'):
+                backbone_model = model.model.model
+                total_layers = len(backbone_model)
+                
+                # Hook on the last 3 layers before detect (more object-focused)
+                # This captures higher-level object representations
+                hook_positions = [
+                    max(0, total_layers - 5),  # ~2 layers from end
+                    max(0, total_layers - 4),
+                    max(0, total_layers - 3),  # Closest to detection head
+                ]
+                
+                for pos in hook_positions:
+                    if pos < total_layers:
+                        hook_handle = backbone_model[pos].register_forward_hook(
+                            hook_fn_factory(pos)
+                        )
+                        hook_handles.append(hook_handle)
+            else:
+                print("[GRADCAM YOLO] Model structure unexpected")
+                return np.zeros((h, w, 3), dtype=np.uint8)
+        
+            # Run prediction with hooks active
             with torch.no_grad():
                 _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1)
             
-            if not features_captured:
-                print("[GRADCAM YOLO] No features captured, fallback to uniform")
+            if not features_multi:
+                print("[GRADCAM YOLO] No features captured")
                 attention_map = np.ones((h, w), dtype=np.float32) * 0.5
             else:
-                # Get the captured feature (backbone output)
-                feat = features_captured[-1]  # Get last captured feature (most recent)
+                # Use features from layer closest to detection (usually most object-relevant)
+                # Sort by layer index (highest = closest to detection head)
+                features_multi.sort(key=lambda x: x['layer'], reverse=True)
+                feat = features_multi[0]['feat']  # Most detection-relevant layer
                 
-                # Ensure 3D (C, H, W)
+                # Handle different tensor shapes
                 if feat.dim() == 4:
-                    feat = feat[0]  # Remove batch dimension
-                
-                # Create attention map: mean across channels (full model focus)
-                if feat.dim() == 3:
-                    attention_map = feat.mean(dim=0).cpu().numpy()  # (H, W)
+                    # (B, C, H, W) - take first batch
+                    feat = feat[0]
+                elif feat.dim() == 3:
+                    # Already (C, H, W)
+                    pass
                 else:
-                    attention_map = feat.squeeze().cpu().numpy()
+                    feat = feat.squeeze()
                 
-                # Normalize to 0-1
-                att_min = attention_map.min()
-                att_max = attention_map.max()
-                if att_max > att_min:
-                    attention_map = (attention_map - att_min) / (att_max - att_min)
+                # Ensure we have (C, H, W)
+                if feat.dim() != 3:
+                    print(f"[GRADCAM YOLO] Unexpected feature shape: {feat.shape}")
+                    attention_map = np.ones((h, w), dtype=np.float32) * 0.5
                 else:
-                    attention_map = np.ones_like(attention_map) * 0.5
-                
-                # Resize to original image size
-                attention_map = cv2.resize(attention_map, (w, h))
-                attention_map = np.clip(attention_map, 0, 1)
+                    # Weight features by magnitude (stronger activations = more object-relevant)
+                    feat_norm = torch.norm(feat, p=2, dim=0)  # Channel-wise L2 norm
+                    feat_np = feat.cpu().numpy()
+                    norm_np = feat_norm.cpu().numpy()
+                    
+                    # Weighted average: higher magnitude = higher weight
+                    if norm_np.max() > 0:
+                        # Weight by spatial norm
+                        attention_map = (norm_np - norm_np.min()) / (norm_np.max() - norm_np.min() + 1e-6)
+                    else:
+                        attention_map = feat.mean(dim=0).cpu().numpy()
+                    
+                    # Normalize to 0-1
+                    att_min = attention_map.min()
+                    att_max = attention_map.max()
+                    if att_max > att_min:
+                        attention_map = (attention_map - att_min) / (att_max - att_min)
+                    else:
+                        attention_map = np.ones_like(attention_map) * 0.5
+                    
+                    # Resize to original image size
+                    attention_map = cv2.resize(attention_map, (w, h))
+                    attention_map = np.clip(attention_map, 0, 1)
             
             # Convert to heatmap
             attention_uint8 = (attention_map * 255).astype(np.uint8)
@@ -120,7 +152,8 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
             return heatmap
         
         finally:
-            hook.remove()
+            for handle in hook_handles:
+                handle.remove()
         
     except Exception as e:
         print(f"[GRADCAM ERROR YOLO] {str(e)}")
