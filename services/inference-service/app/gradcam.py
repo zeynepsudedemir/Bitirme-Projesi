@@ -54,107 +54,129 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
     h, w = frame_bgr.shape[:2]
 
     try:
-        # Store features from multiple layers for weighted combination
         features_multi = []
-        
+
         def hook_fn_factory(layer_idx):
-            """Factory to create hooks that capture layer index"""
             def hook_fn(module, input, output):
                 if isinstance(output, torch.Tensor):
                     features_multi.append({
-                        'layer': layer_idx,
-                        'feat': output.detach()
+                        "layer": layer_idx,
+                        "feat": output.detach()
                     })
+                elif isinstance(output, (list, tuple)) and output and isinstance(output[0], torch.Tensor):
+                    features_multi.append({
+                        "layer": layer_idx,
+                        "feat": output[0].detach()
+                    })
+                elif isinstance(output, dict):
+                    for value in output.values():
+                        if isinstance(value, torch.Tensor):
+                            features_multi.append({
+                                "layer": layer_idx,
+                                "feat": value.detach()
+                            })
+                            break
             return hook_fn
-        
+
         backbone_model = None
         hook_handles = []
-        
-        try:
-            if hasattr(model, 'model') and hasattr(model.model, 'model'):
+
+        if hasattr(model, "model"):
+            if hasattr(model.model, "model"):
                 backbone_model = model.model.model
-                total_layers = len(backbone_model)
-                
-                # Hook on the last 3 layers before detect (more object-focused)
-                # This captures higher-level object representations
-                hook_positions = [
-                    max(0, total_layers - 5),  # ~2 layers from end
-                    max(0, total_layers - 4),
-                    max(0, total_layers - 3),  # Closest to detection head
-                ]
-                
-                for pos in hook_positions:
-                    if pos < total_layers:
-                        hook_handle = backbone_model[pos].register_forward_hook(
-                            hook_fn_factory(pos)
-                        )
-                        hook_handles.append(hook_handle)
             else:
-                print("[GRADCAM YOLO] Model structure unexpected")
-                return np.zeros((h, w, 3), dtype=np.uint8)
-        
-            # Run prediction with hooks active
+                backbone_model = model.model
+
+        if backbone_model is None or not hasattr(backbone_model, "__len__"):
+            print("[GRADCAM YOLO] Model structure unexpected")
+            return np.zeros((h, w, 3), dtype=np.uint8)
+
+        total_layers = len(backbone_model)
+        hook_positions = []
+
+        if total_layers >= 3:
+            hook_positions = [
+                max(0, total_layers - 5),
+                max(0, total_layers - 4),
+                max(0, total_layers - 3),
+            ]
+        else:
+            hook_positions = list(range(total_layers))
+
+        for pos in hook_positions:
+            try:
+                layer_module = backbone_model[pos]
+                hook_handles.append(layer_module.register_forward_hook(hook_fn_factory(pos)))
+            except Exception:
+                continue
+
+        def clear_hooks():
+            for handle in hook_handles:
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+
+        try:
             with torch.no_grad():
                 _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1)
-            
+
+            if not features_multi:
+                clear_hooks()
+                hook_handles = []
+
+                fallback_positions = list(range(max(0, total_layers - 6), total_layers))
+                for pos in fallback_positions:
+                    try:
+                        layer_module = backbone_model[pos]
+                        hook_handles.append(layer_module.register_forward_hook(hook_fn_factory(pos)))
+                    except Exception:
+                        continue
+
+                with torch.no_grad():
+                    _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1)
+
             if not features_multi:
                 print("[GRADCAM YOLO] No features captured")
                 attention_map = np.ones((h, w), dtype=np.float32) * 0.5
             else:
-                # Use features from layer closest to detection (usually most object-relevant)
-                # Sort by layer index (highest = closest to detection head)
-                features_multi.sort(key=lambda x: x['layer'], reverse=True)
-                feat = features_multi[0]['feat']  # Most detection-relevant layer
-                
-                # Handle different tensor shapes
+                features_multi.sort(key=lambda x: x["layer"], reverse=True)
+                feat = features_multi[0]["feat"]
+
                 if feat.dim() == 4:
-                    # (B, C, H, W) - take first batch
                     feat = feat[0]
-                elif feat.dim() == 3:
-                    # Already (C, H, W)
-                    pass
-                else:
+                elif feat.dim() != 3:
                     feat = feat.squeeze()
-                
-                # Ensure we have (C, H, W)
+
                 if feat.dim() != 3:
                     print(f"[GRADCAM YOLO] Unexpected feature shape: {feat.shape}")
                     attention_map = np.ones((h, w), dtype=np.float32) * 0.5
                 else:
-                    # Weight features by magnitude (stronger activations = more object-relevant)
-                    feat_norm = torch.norm(feat, p=2, dim=0)  # Channel-wise L2 norm
-                    feat_np = feat.cpu().numpy()
+                    feat_norm = torch.norm(feat, p=2, dim=0)
                     norm_np = feat_norm.cpu().numpy()
-                    
-                    # Weighted average: higher magnitude = higher weight
-                    if norm_np.max() > 0:
-                        # Weight by spatial norm
+
+                    if norm_np.max() > norm_np.min():
                         attention_map = (norm_np - norm_np.min()) / (norm_np.max() - norm_np.min() + 1e-6)
                     else:
                         attention_map = feat.mean(dim=0).cpu().numpy()
-                    
-                    # Normalize to 0-1
+
                     att_min = attention_map.min()
                     att_max = attention_map.max()
                     if att_max > att_min:
                         attention_map = (attention_map - att_min) / (att_max - att_min)
                     else:
                         attention_map = np.ones_like(attention_map) * 0.5
-                    
-                    # Resize to original image size
+
                     attention_map = cv2.resize(attention_map, (w, h))
                     attention_map = np.clip(attention_map, 0, 1)
-            
-            # Convert to heatmap
+
             attention_uint8 = (attention_map * 255).astype(np.uint8)
             heatmap = cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
-            
             return heatmap
-        
+
         finally:
-            for handle in hook_handles:
-                handle.remove()
-        
+            clear_hooks()
+
     except Exception as e:
         print(f"[GRADCAM ERROR YOLO] {str(e)}")
         import traceback
@@ -177,7 +199,7 @@ def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None) -
         img = torch.from_numpy(frame_rgb).permute(2, 0, 1).float() / 255.0
         img_batch = img.unsqueeze(0).to(device)
 
-        model.train(False)
+        model.eval()
         
         # Store features captured by hook
         features_captured = []
@@ -245,4 +267,3 @@ def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None) -
     except Exception as e:
         print(f"[GRADCAM ERROR FASTER_RCNN] {str(e)}")
         return np.zeros((h, w, 3), dtype=np.uint8) #hata alnın yer
-
