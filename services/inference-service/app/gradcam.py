@@ -48,69 +48,84 @@ def _safe_gradcam_computation(act: torch.Tensor, grad: torch.Tensor) -> np.ndarr
 
 def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.ndarray:
     """
-    YOLOv8 GradCAM - creates attention map from model confidence.
-    Shows where model detected objects with confidence intensity.
+    YOLOv8 GradCAM - shows model focus using feature maps from backbone.
+    Uses hook to capture backbone layer outputs (full model attention, not just detections).
     """
     h, w = frame_bgr.shape[:2]
 
     try:
-        # Create attention map from detections and confidence
-        attention_map = np.zeros((h, w), dtype=np.float32)
+        # Store features captured by hook
+        features_captured = []
         
-        if detections:
-            # For each detection, add a Gaussian distribution centered at the detection
-            for det in detections:
-                bbox = det.get("bbox", {})
-                confidence = det.get("confidence", 0.5)
-                
-                # Get bbox coordinates
-                x1 = int(bbox.get("x1", 0))
-                y1 = int(bbox.get("y1", 0))
-                x2 = int(bbox.get("x2", w))
-                y2 = int(bbox.get("y2", h))
-                
-                # Clamp to bounds
-                x1 = max(0, min(x1, w-1))
-                y1 = max(0, min(y1, h-1))
-                x2 = max(x1+1, min(x2, w))
-                y2 = max(y1+1, min(y2, h))
-                
-                # Create Gaussian at detection center with sigma proportional to box size
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
-                sigma_x = max(5, (x2 - x1) // 3)
-                sigma_y = max(5, (y2 - y1) // 3)
-                
-                # Create meshgrid for Gaussian
-                yy, xx = np.ogrid[:h, :w]
-                gaussian = np.exp(-((xx - cx)**2 / (2 * sigma_x**2) + 
-                                   (yy - cy)**2 / (2 * sigma_y**2)))
-                
-                # Weight by confidence and add to map
-                attention_map += gaussian * confidence
+        def hook_fn(module, input, output):
+            if isinstance(output, torch.Tensor):
+                features_captured.append(output.detach())
+            elif isinstance(output, (list, tuple)):
+                for item in output:
+                    if isinstance(item, torch.Tensor):
+                        features_captured.append(item.detach())
+                        break
+        
+        # ultralytics YOLO structure:
+        # model -> YOLO object
+        # model.model -> DetectionModel (the actual PyTorch module)
+        # model.model.model -> nn.Sequential with backbone + head
+        if hasattr(model, 'model') and hasattr(model.model, 'model'):
+            # Hook on the first layer of the backbone
+            backbone_layers = model.model.model
+            target_layer = backbone_layers[0]
+            hook = target_layer.register_forward_hook(hook_fn)
         else:
-            # If no detections, create uniform attention
-            attention_map = np.ones((h, w), dtype=np.float32) * 0.3
+            print("[GRADCAM YOLO] Model structure not recognized")
+            return np.zeros((h, w, 3), dtype=np.uint8)
         
-        # Normalize to 0-1
-        att_min = attention_map.min()
-        att_max = attention_map.max()
-        if att_max > att_min:
-            attention_map = (attention_map - att_min) / (att_max - att_min)
-        else:
-            attention_map = np.ones_like(attention_map) * 0.5
+        try:
+            # Use predict method like in main.py (avoids dataset validation)
+            with torch.no_grad():
+                _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1)
+            
+            if not features_captured:
+                print("[GRADCAM YOLO] No features captured, fallback to uniform")
+                attention_map = np.ones((h, w), dtype=np.float32) * 0.5
+            else:
+                # Get the captured feature (backbone output)
+                feat = features_captured[-1]  # Get last captured feature (most recent)
+                
+                # Ensure 3D (C, H, W)
+                if feat.dim() == 4:
+                    feat = feat[0]  # Remove batch dimension
+                
+                # Create attention map: mean across channels (full model focus)
+                if feat.dim() == 3:
+                    attention_map = feat.mean(dim=0).cpu().numpy()  # (H, W)
+                else:
+                    attention_map = feat.squeeze().cpu().numpy()
+                
+                # Normalize to 0-1
+                att_min = attention_map.min()
+                att_max = attention_map.max()
+                if att_max > att_min:
+                    attention_map = (attention_map - att_min) / (att_max - att_min)
+                else:
+                    attention_map = np.ones_like(attention_map) * 0.5
+                
+                # Resize to original image size
+                attention_map = cv2.resize(attention_map, (w, h))
+                attention_map = np.clip(attention_map, 0, 1)
+            
+            # Convert to heatmap
+            attention_uint8 = (attention_map * 255).astype(np.uint8)
+            heatmap = cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
+            
+            return heatmap
         
-        # Clip to 0-1
-        attention_map = np.clip(attention_map, 0, 1)
-        
-        # Convert to heatmap
-        attention_uint8 = (attention_map * 255).astype(np.uint8)
-        heatmap = cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
-        
-        return heatmap
+        finally:
+            hook.remove()
         
     except Exception as e:
         print(f"[GRADCAM ERROR YOLO] {str(e)}")
+        import traceback
+        traceback.print_exc()
         return np.zeros((h, w, 3), dtype=np.uint8)
 
 
