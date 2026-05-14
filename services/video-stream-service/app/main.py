@@ -94,7 +94,7 @@ def stop_stream(drone_id: str):
         logger.error(f"[API ERROR] stop_stream: {e}")
         raise HTTPException(status_code=500, detail="Stream durdurulamadı")
 
-
+stream_models: dict = {}
 @app.patch("/streams/{drone_id}/model")
 def update_model(drone_id: str, req: UpdateModelRequest):
     valid_models = ["yolov5", "yolov8", "faster_rcnn"]

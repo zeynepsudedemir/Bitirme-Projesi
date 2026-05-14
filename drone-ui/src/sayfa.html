@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Drone XAI Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #000; padding: 16px; font-family: 'Courier New', monospace; }
+
+    .dash { background: #0a0e1a; border-radius: 12px; padding: 16px; color: #c8d8f0; min-height: 600px; }
+
+    .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #1a2a3a; }
+    .logo { font-size: 13px; font-weight: 700; letter-spacing: .15em; color: #00e5ff; }
+    .logo span { color: #4a6fa5; font-weight: 400; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #00e5ff; display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.4 } }
+    .status-txt { font-size: 11px; color: #4a9aba; letter-spacing: .05em; }
+    .coord-badge { display: inline-block; background: #0a1525; border: 1px solid #0d2035; border-radius: 4px; font-size: 10px; padding: 2px 6px; color: #4a9aba; letter-spacing: .04em; }
+
+    .main-grid { display: grid; grid-template-columns: 1fr 220px; gap: 12px; margin-bottom: 12px; }
+    .cam-panel { background: #060b14; border: 1px solid #0d2035; border-radius: 8px; overflow: hidden; position: relative; }
+    .cam-label { position: absolute; top: 8px; left: 10px; font-size: 10px; letter-spacing: .12em; color: #00e5ff; z-index: 2; }
+    .cam-rec { position: absolute; top: 8px; right: 10px; display: flex; align-items: center; gap: 5px; z-index: 2; }
+    .rec-dot { width: 6px; height: 6px; border-radius: 50%; background: #e24b4a; animation: pulse 1.2s infinite; }
+    .rec-txt { font-size: 10px; color: #e24b4a; letter-spacing: .08em; }
+    canvas#droneView { display: block; width: 100%; height: 220px; }
+    .cam-footer { padding: 6px 10px; display: flex; gap: 16px; border-top: 1px solid #0d2035; }
+    .cam-stat { font-size: 10px; color: #4a6fa5; letter-spacing: .05em; }
+    .cam-stat span { color: #85b7eb; }
+
+    .side-col { display: flex; flex-direction: column; gap: 10px; }
+    .panel { background: #060b14; border: 1px solid #0d2035; border-radius: 8px; padding: 12px; }
+    .panel-title { font-size: 10px; letter-spacing: .12em; color: #4a9aba; margin-bottom: 10px; text-transform: uppercase; }
+
+    .model-btn { display: flex; flex-direction: column; gap: 6px; }
+    .mbtn { background: #0a1525; border: 1px solid #0d2035; border-radius: 6px; padding: 7px 10px; cursor: pointer; font-family: 'Courier New', monospace; font-size: 11px; color: #4a6fa5; letter-spacing: .06em; text-align: left; transition: all .18s; }
+    .mbtn:hover { border-color: #378add; color: #85b7eb; }
+    .mbtn.active { background: #0d2035; border-color: #00e5ff; color: #00e5ff; }
+    .mbtn .m-acc { font-size: 10px; color: #4a6fa5; margin-top: 2px; }
+    .mbtn.active .m-acc { color: #378add; }
+
+    .slider-row { margin-bottom: 10px; }
+    .slider-label { display: flex; justify-content: space-between; font-size: 10px; color: #4a9aba; margin-bottom: 5px; letter-spacing: .05em; }
+    .slider-val { color: #00e5ff; }
+    input[type=range] { width: 100%; accent-color: #00e5ff; height: 3px; cursor: pointer; }
+
+    .sahi-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; border-top: 1px solid #0d2035; margin-top: 6px; }
+    .sahi-lbl { font-size: 10px; color: #4a9aba; letter-spacing: .06em; }
+    .toggle { width: 32px; height: 18px; background: #0a1525; border: 1px solid #0d2035; border-radius: 9px; position: relative; cursor: pointer; transition: background .2s; }
+    .toggle.on { background: #003d4d; border-color: #00e5ff; }
+    .toggle-knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #4a6fa5; transition: all .2s; }
+    .toggle.on .toggle-knob { left: 16px; background: #00e5ff; }
+
+    .metrics-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+    .mcard { background: #060b14; border: 1px solid #0d2035; border-radius: 8px; padding: 10px 8px; text-align: center; }
+    .mcard-val { font-size: 20px; font-weight: 700; letter-spacing: .02em; color: #00e5ff; font-family: 'Courier New', monospace; }
+    .mcard-lbl { font-size: 10px; color: #4a6fa5; letter-spacing: .08em; margin-top: 3px; }
+    .mcard-sub { font-size: 10px; color: #4a9aba; margin-top: 2px; }
+
+    .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .heat-panel { background: #060b14; border: 1px solid #0d2035; border-radius: 8px; padding: 12px; }
+    .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .bar-lbl { font-size: 10px; color: #4a6fa5; width: 60px; letter-spacing: .04em; flex-shrink: 0; }
+    .bar-track { flex: 1; height: 4px; background: #0d2035; border-radius: 2px; }
+    .bar-fill { height: 100%; border-radius: 2px; background: #00e5ff; transition: width .4s; }
+    .bar-pct { font-size: 10px; color: #85b7eb; width: 32px; text-align: right; flex-shrink: 0; }
+
+    .log-panel { background: #060b14; border: 1px solid #0d2035; border-radius: 8px; padding: 12px; font-family: 'Courier New', monospace; }
+    .log-line { font-size: 10px; color: #4a6fa5; line-height: 1.8; letter-spacing: .04em; }
+    .log-line .t   { color: #4a9aba; }
+    .log-line .ok  { color: #1D9E75; }
+    .log-line .warn { color: #EF9F27; }
+    .log-line .val { color: #00e5ff; }
+  </style>
+</head>
+<body>
+
+<div class="dash">
+
+  <!-- ÜST BAR -->
+  <div class="topbar">
+    <div class="logo">&#9632; DRONE<span>-XAI</span> <span style="color:#1a2a3a">|</span> <span style="font-size:11px">AERIAL DETECTION v2.4</span></div>
+    <div style="display:flex;align-items:center;gap:16px">
+      <span class="coord-badge">LAT 41.0082 / LON 28.9784</span>
+      <div><span class="status-dot"></span><span class="status-txt">LIVE FEED ACTIVE</span></div>
+    </div>
+  </div>
+
+  <!-- ANA GRID: Kamera + Sağ Panel -->
+  <div class="main-grid">
+
+    <!-- KAMERA PANELİ -->
+    <div class="cam-panel">
+      <div class="cam-label">CAM-01 / ALT 82m</div>
+      <div class="cam-rec"><div class="rec-dot"></div><span class="rec-txt">REC</span></div>
+      <canvas id="droneView" height="220"></canvas>
+      <div class="cam-footer">
+        <span class="cam-stat">FRAME <span id="frameNum">0</span></span>
+        <span class="cam-stat">OBJ <span id="objCount">0</span></span>
+        <span class="cam-stat">CONF <span id="confDisp">0.65</span></span>
+        <span class="cam-stat">SAHI <span id="sahiDisp">OFF</span></span>
+      </div>
+    </div>
+
+    <!-- SAĞ: Model + Parametreler -->
+    <div class="side-col">
+      <div class="panel">
+        <div class="panel-title">Model Seçici</div>
+        <div class="model-btn">
+          <button class="mbtn active" data-m="yolov8" onclick="selectModel(this)">
+            YOLOv8 <div class="m-acc">mAP 0.847 · 62 FPS</div>
+          </button>
+          <button class="mbtn" data-m="yolov5" onclick="selectModel(this)">
+            YOLOv5 <div class="m-acc">mAP 0.791 · 48 FPS</div>
+          </button>
+          <button class="mbtn" data-m="frcnn" onclick="selectModel(this)">
+            Faster R-CNN <div class="m-acc">mAP 0.823 · 12 FPS</div>
+          </button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Parametreler</div>
+        <div class="slider-row">
+          <div class="slider-label"><span>Confidence</span><span class="slider-val" id="confVal">0.65</span></div>
+          <input type="range" min="10" max="95" value="65" step="1" oninput="setConf(this.value)">
+        </div>
+        <div class="slider-row">
+          <div class="slider-label"><span>XAI Overlay</span><span class="slider-val" id="xaiVal">40%</span></div>
+          <input type="range" min="0" max="100" value="40" step="1" oninput="setXai(this.value)">
+        </div>
+        <div class="sahi-row">
+          <span class="sahi-lbl">SAHI MODE</span>
+          <div class="toggle" id="sahiToggle" onclick="toggleSahi()"><div class="toggle-knob"></div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- METRİK KARTLAR -->
+  <div class="metrics-row">
+    <div class="mcard"><div class="mcard-val" id="m-map">0.847</div><div class="mcard-lbl">mAP@0.5</div><div class="mcard-sub">mean avg precision</div></div>
+    <div class="mcard"><div class="mcard-val" id="m-fps">62</div><div class="mcard-lbl">FPS</div><div class="mcard-sub" id="m-inf">16ms inference</div></div>
+    <div class="mcard"><div class="mcard-val" id="m-prec">0.891</div><div class="mcard-lbl">Precision</div><div class="mcard-sub" id="m-rec-sub">recall 0.803</div></div>
+    <div class="mcard"><div class="mcard-val" id="m-f1">0.845</div><div class="mcard-lbl">F1 Score</div><div class="mcard-sub">3 classes</div></div>
+  </div>
+
+  <!-- ALT GRID: Sınıf Dağılımı + Log -->
+  <div class="bottom-grid">
+
+    <div class="heat-panel">
+      <div class="panel-title">Grad-CAM — Sınıf Dağılımı</div>
+      <div class="bar-row"><span class="bar-lbl">Araç</span><div class="bar-track"><div class="bar-fill" style="width:83%"></div></div><span class="bar-pct">83%</span></div>
+      <div class="bar-row"><span class="bar-lbl">Yaya</span><div class="bar-track"><div class="bar-fill" style="width:50%;background:#1D9E75"></div></div><span class="bar-pct">50%</span></div>
+      <div class="bar-row"><span class="bar-lbl">Bisiklet</span><div class="bar-track"><div class="bar-fill" style="width:31%;background:#EF9F27"></div></div><span class="bar-pct">31%</span></div>
+      <div class="bar-row"><span class="bar-lbl">Kamyon</span><div class="bar-track"><div class="bar-fill" style="width:22%;background:#7F77DD"></div></div><span class="bar-pct">22%</span></div>
+      <div style="margin-top:10px;border-top:1px solid #0d2035;padding-top:8px">
+        <canvas id="heatCanvas" width="400" height="60" style="width:100%;height:60px;border-radius:4px"></canvas>
+        <div style="font-size:10px;color:#4a6fa5;margin-top:4px;letter-spacing:.04em">XAI aktivasyon haritası — odak bölgeleri</div>
+      </div>
+    </div>
+
+    <div class="log-panel">
+      <div class="panel-title">Tespit Logu</div>
+      <div id="logBox"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  const MODELS = {
+    yolov8: { map:'0.847', fps:62, inf:16, prec:'0.891', rec:'0.803', f1:'0.845' },
+    yolov5: { map:'0.791', fps:48, inf:21, prec:'0.834', rec:'0.762', f1:'0.796' },
+    frcnn:  { map:'0.823', fps:12, inf:83, prec:'0.871', rec:'0.812', f1:'0.840' }
+  };
+  let currentModel = 'yolov8', conf = 0.65, xai = 0.40, sahi = false, frame = 0, logLines = [];
+
+  function selectModel(btn) {
+    document.querySelectorAll('.mbtn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentModel = btn.dataset.m;
+    updateMetrics();
+  }
+
+  function updateMetrics() {
+    const m = MODELS[currentModel];
+    document.getElementById('m-map').textContent    = m.map;
+    document.getElementById('m-fps').textContent    = m.fps;
+    document.getElementById('m-inf').textContent    = m.inf + 'ms inference';
+    document.getElementById('m-prec').textContent   = m.prec;
+    document.getElementById('m-rec-sub').textContent = 'recall ' + m.rec;
+    document.getElementById('m-f1').textContent     = m.f1;
+  }
+
+  function setConf(v) {
+    conf = v / 100;
+    document.getElementById('confVal').textContent  = (v / 100).toFixed(2);
+    document.getElementById('confDisp').textContent = (v / 100).toFixed(2);
+  }
+
+  function setXai(v) {
+    xai = v / 100;
+    document.getElementById('xaiVal').textContent = v + '%';
+  }
+
+  function toggleSahi() {
+    sahi = !sahi;
+    document.getElementById('sahiToggle').classList.toggle('on', sahi);
+    document.getElementById('sahiDisp').textContent = sahi ? 'ON' : 'OFF';
+  }
+
+  /* ---- Drone canvas çizimi ---- */
+  const dv = document.getElementById('droneView');
+  const dc = dv.getContext('2d');
+  dv.width  = dv.offsetWidth || 440;
+  dv.height = 220;
+
+  const BOXES = [
+    { x:0.12, y:0.18, w:0.14, h:0.20, lbl:'Araç',    col:'#00e5ff', heat:'#e24b4a', conf:0.92 },
+    { x:0.35, y:0.30, w:0.10, h:0.28, lbl:'Yaya',    col:'#1D9E75', heat:'#EF9F27', conf:0.78 },
+    { x:0.58, y:0.15, w:0.18, h:0.18, lbl:'Araç',    col:'#00e5ff', heat:'#e24b4a', conf:0.88 },
+    { x:0.70, y:0.50, w:0.09, h:0.25, lbl:'Yaya',    col:'#1D9E75', heat:'#EF9F27', conf:0.71 },
+    { x:0.22, y:0.60, w:0.13, h:0.16, lbl:'Bisiklet', col:'#EF9F27', heat:'#EF9F27', conf:0.66 },
+  ];
+
+  function drawDrone(t) {
+    const W = dv.width, H = dv.height;
+    dc.fillStyle = '#030609'; dc.fillRect(0, 0, W, H);
+
+    dc.strokeStyle = '#0d2035'; dc.lineWidth = 0.5;
+    for (let x = 0; x < W; x += 30) { dc.beginPath(); dc.moveTo(x, 0); dc.lineTo(x, H); dc.stroke(); }
+    for (let y = 0; y < H; y += 30) { dc.beginPath(); dc.moveTo(0, y); dc.lineTo(W, y); dc.stroke(); }
+
+    dc.fillStyle = '#0a1018'; dc.fillRect(0.05*W, 0.05*H, 0.9*W, 0.9*H);
+    [0.2, 0.5, 0.8].forEach(ly => { dc.fillStyle = '#0d1820'; dc.fillRect(0, ly*H - 2, W, 4); });
+    [0.1, 0.3, 0.6, 0.85].forEach(bx => {
+      dc.fillStyle = '#0d1c28'; dc.fillRect(bx*W, 0.1*H, W*0.12, H*0.25);
+      dc.fillStyle = '#071018'; dc.fillRect(bx*W + 2, 0.1*H + 2, W*0.12 - 4, H*0.25 - 4);
+    });
+
+    if (xai > 0.05) {
+      BOXES.forEach(b => {
+        const cx = (b.x + b.w/2)*W, cy = (b.y + b.h/2)*H, r = Math.min(b.w, b.h)*W*0.6;
+        const g = dc.createRadialGradient(cx, cy, 0, cx, cy, r);
+        g.addColorStop(0, b.heat + 'aa');
+        g.addColorStop(0.5, b.heat + '44');
+        g.addColorStop(1, 'transparent');
+        dc.globalAlpha = xai; dc.fillStyle = g;
+        dc.beginPath(); dc.arc(cx, cy, r, 0, Math.PI*2); dc.fill();
+        dc.globalAlpha = 1;
+      });
+    }
+
+    const visible = BOXES.filter(b => b.conf >= conf);
+    visible.forEach(b => {
+      const bx = b.x*W, by = b.y*H, bw = b.w*W, bh = b.h*H;
+      dc.strokeStyle = b.col; dc.lineWidth = 1.5; dc.strokeRect(bx, by, bw, bh);
+      [[bx,by],[bx+bw,by],[bx,by+bh],[bx+bw,by+bh]].forEach(([cx,cy], i) => {
+        const sx = i%2===0 ? 1 : -1, sy = i<2 ? 1 : -1;
+        dc.strokeStyle = b.col; dc.lineWidth = 2; dc.beginPath();
+        dc.moveTo(cx, cy + sy*12); dc.lineTo(cx, cy); dc.lineTo(cx + sx*12, cy); dc.stroke();
+      });
+      dc.fillStyle = b.col + '22'; dc.fillRect(bx, by, bw, bh);
+      dc.fillStyle = b.col; dc.fillRect(bx, by - 16, bw, 16);
+      dc.fillStyle = '#000'; dc.font = 'bold 10px Courier New'; dc.textAlign = 'left';
+      const sc = (b.conf + Math.sin(t * 0.05 + b.x*10) * 0.02).toFixed(2);
+      dc.fillText(b.lbl + ' ' + Math.min(parseFloat(sc), 0.99).toFixed(2), bx + 4, by - 4);
+    });
+
+    document.getElementById('objCount').textContent = visible.length;
+    document.getElementById('frameNum').textContent  = frame;
+  }
+
+  /* ---- Heatmap canvas ---- */
+  function drawHeat() {
+    const hc = document.getElementById('heatCanvas');
+    const ctx = hc.getContext('2d');
+    const W = hc.width, H = hc.height;
+    ctx.fillStyle = '#060b14'; ctx.fillRect(0, 0, W, H);
+    const cols = ['#e24b4a','#EF9F27','#EF9F27','#1D9E75','#85b7eb','#4a6fa5'];
+    for (let x = 0; x < W; x++) {
+      const v = Math.abs(Math.sin(x*0.04 + Date.now()*0.001) * Math.sin(x*0.013));
+      const ci = Math.floor(v * cols.length);
+      ctx.fillStyle = cols[Math.min(ci, cols.length-1)];
+      const h = v * H * 0.85 + 4;
+      ctx.fillRect(x, H - h, 1, h);
+    }
+  }
+
+  /* ---- Tespit logu ---- */
+  const LOG_TMPL = [
+    ts => `<span class="t">[${ts}]</span> <span class="ok">DETECT</span> araç x=<span class="val">${120 + Math.round(Math.random()*80)}</span>px conf=<span class="val">${(0.87 + Math.random()*0.1).toFixed(2)}</span>`,
+    ts => `<span class="t">[${ts}]</span> <span class="ok">DETECT</span> yaya x=<span class="val">${200 + Math.round(Math.random()*60)}</span>px conf=<span class="val">${(0.72 + Math.random()*0.12).toFixed(2)}</span>`,
+    ts => `<span class="t">[${ts}]</span> <span class="warn">TRACK</span>  obj#<span class="val">${Math.round(Math.random()*9+1).toString().padStart(2,'0')}</span> velocity=<span class="val">${(2 + Math.random()*8).toFixed(1)}</span>m/s`,
+    ts => `<span class="t">[${ts}]</span> <span class="ok">XAI</span>   grad-cam aktif &mdash; odak <span class="val">${Math.round(30 + Math.random()*50)}%</span>`,
+  ];
+
+  function addLog() {
+    const now = new Date();
+    const ts = now.getHours().toString().padStart(2,'0') + ':' +
+               now.getMinutes().toString().padStart(2,'0') + ':' +
+               now.getSeconds().toString().padStart(2,'0');
+    const fn = LOG_TMPL[Math.floor(Math.random() * LOG_TMPL.length)];
+    logLines.unshift(fn(ts));
+    if (logLines.length > 7) logLines.pop();
+    document.getElementById('logBox').innerHTML = logLines.map(l => `<div class="log-line">${l}</div>`).join('');
+  }
+
+  /* ---- Ana döngü ---- */
+  let last = 0;
+  function loop(ts) {
+    if (ts - last > 40) { frame++; drawDrone(ts / 1000); last = ts; }
+    drawHeat();
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+  setInterval(addLog, 1800);
+  addLog();
+  updateMetrics();
+</script>
+
+</body>
+</html>

@@ -240,11 +240,11 @@ export default function DroneAnalyticsDashboard() {
         pending = true;
         const fd = new FormData();
         fd.append("file", blob, "frame.jpg");
-        fd.append("model_name", selectedModel);
+        //fd.append("model_name", selectedModel);
 
         const t0 = performance.now();
 
-        fetch(`${INFER_API}/api/v1/infer/sync`, { method:"POST", body:fd })
+        fetch(`${INFER_API}/api/v1/infer/sync?model_name=${selectedModel}`, { method:"POST", body:fd })
           .then(res => res.json())
           .then(data => {
             console.log(`toplam: ${(performance.now()-t0).toFixed(0)}ms`); 
@@ -303,8 +303,7 @@ export default function DroneAnalyticsDashboard() {
     try {
       const fd = new FormData();
       fd.append("file", fileObjRef.current);
-      fd.append("model_name", selectedModel);
-      const res  = await fetch(`${INFER_API}/api/v1/infer/sync`, { method:"POST", body:fd });
+      const res = await fetch(`${INFER_API}/api/v1/infer/sync?model_name=${selectedModel}`, { method:"POST", body:fd });
       if (!res.ok) throw new Error();
       const data = await res.json();
       const dets = (data.detections || []).filter(d => activeClasses.has(d.label) && d.confidence >= threshold);
