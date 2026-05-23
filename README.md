@@ -3,7 +3,7 @@
 ## 🎥 Demo
 
 
-https://github.com/user-attachments/assets/c398c368-640f-4c0b-ac1b-8c2947f67a71
+https://github.com/user-attachments/assets/6f6fe8fe-5d89-47e9-8075-e6b3a2142bdf
 
 
 
