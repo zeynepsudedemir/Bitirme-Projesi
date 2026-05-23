@@ -1,44 +1,16 @@
-
-
 # DroneVision — Aerial Object Detection Platform
 
-<div align="center">
+## 🎥 Demo
 
-![DroneVision Banner](https://img.shields.io/badge/DroneVision-Aerial%20AI-0a0a0a?style=for-the-badge&logo=drone&logoColor=white)
 
-**Real-time multi-model object detection for drone-captured aerial imagery**
+https://github.com/user-attachments/assets/c398c368-640f-4c0b-ac1b-8c2947f67a71
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white)](https://postgresql.org)
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-</div>
-
----
-
-## 📖 Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Features](#features)
-- [Models](#models)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [API Reference](#api-reference)
-- [Project Structure](#project-structure)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-
----
 
 ## Overview
 
 **DroneVision** is a containerized, microservices-based platform for real-time aerial object detection. Designed for the [VisDrone dataset](https://github.com/VisDrone/VisDrone-Dataset) benchmark classes, it supports dynamic switching between three state-of-the-art deep learning models — **YOLOv5**, **YOLOv8**, and **Faster R-CNN** — all served through a unified REST API and backed by a PostgreSQL detection history database.
 
-https://github.com/user-attachments/assets/fa919b0e-8715-4504-8719-0539002bbc98
 ### Use Cases
 - Drone-based traffic monitoring and vehicle counting
 - Crowd density analysis from aerial perspectives
