@@ -55,6 +55,7 @@ export default function DroneAnalyticsDashboard() {
   const [selectedModel, setSelectedModel] = useState("yolov8");
   const [threshold, setThreshold]         = useState(0.5);
   const [xaiOverlay, setXaiOverlay]       = useState(0.4);
+  const [enableGradcam, setEnableGradcam] = useState(true);
   const [sahiMode, setSahiMode]           = useState(false);
   const [activeClasses, setActiveClasses] = useState(new Set(ALL_CLASSES));
   const [status, setStatus]               = useState("idle");
@@ -92,23 +93,37 @@ export default function DroneAnalyticsDashboard() {
   const mx = modelMetrics[selectedModel] || {};
 
   // Live detection log
+  // ESKI BLOĞU (95-112 arası) SİL, YERİNE BU GELİR:
+
   useEffect(() => {
-    if (!streamStarted && status !== "done") return;
-    const LOG_TMPL = [
-      () => `DETECT araç x=${120 + Math.round(Math.random()*80)}px conf=${(0.87 + Math.random()*0.1).toFixed(2)}`,
-      () => `DETECT yaya x=${200 + Math.round(Math.random()*60)}px conf=${(0.72 + Math.random()*0.12).toFixed(2)}`,
-      () => `TRACK  obj#${Math.round(Math.random()*9+1).toString().padStart(2,'0')} velocity=${(2 + Math.random()*8).toFixed(1)}m/s`,
-      () => `XAI    grad-cam aktif — odak ${Math.round(30 + Math.random()*50)}%`,
-    ];
-    const iv = setInterval(() => {
-      const now = new Date();
-      const ts = [now.getHours(), now.getMinutes(), now.getSeconds()]
-        .map(v => v.toString().padStart(2,'0')).join(':');
-      const msg = LOG_TMPL[Math.floor(Math.random() * LOG_TMPL.length)]();
-      setLogLines(prev => [`[${ts}] ${msg}`, ...prev].slice(0, 8));
-    }, 1800);
-    return () => clearInterval(iv);
-  }, [streamStarted, status]);
+    if (detections.length === 0) return;
+
+    const now = new Date();
+    const ts = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map(v => v.toString().padStart(2, "0")).join(":");
+
+    // Her frame'deki tespitleri grupla: {car: 3, pedestrian: 2, ...}
+    const counts = {};
+    detections.forEach(d => { counts[d.label] = (counts[d.label] || 0) + 1; });
+
+    // Her label için bir log satırı üret (max 3 satır)
+    const newLines = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([label, cnt]) => {
+        const best = detections
+          .filter(d => d.label === label)
+          .reduce((a, b) => a.confidence > b.confidence ? a : b);
+        return `[${ts}] DETECT ${label} ×${cnt} conf=${best.confidence.toFixed(2)}`;
+      });
+
+    // SAHI aktifse log'a ekle
+    if (sahiMode) {
+      newLines.push(`[${ts}] SAHI  slice-inference aktif | toplam ${detections.length} tespit`);
+    }
+
+    setLogLines(prev => [...newLines, ...prev].slice(0, 8));
+  }, [detections, sahiMode]);
 
   const clearCanvas = () => {
     const c = canvasRef.current;
@@ -235,35 +250,62 @@ export default function DroneAnalyticsDashboard() {
   const startStream = () => {
     if (!fileObjRef.current || !videoRef.current) return;
     const offscreen = document.createElement("canvas");
-    const MAX_W = 640;
-    let rafId, pending = false, lastSentTime = 0, lastFrameTime = 0;
+
+    // ── Çözünürlük: backend 640'a resize yapıyor, biz de aynısını gönderelim ──
+    const MAX_W = 480; // 640→480: encode+transfer hızlanır, model yine 640'a resize eder
+
+    let rafId;
+    let pending = false;
+    let lastSentTime = 0;
+    let lastFrameTime = 0;
+    // GradCAM: her N inference frame'de bir istenir (backend zaten önbellekliyor)
+    let framesSinceGradcam = 0;
+    const GRADCAM_EVERY_N = 8; // her 8 inference frame'de 1 gradcam isteği
+
     const vid = videoRef.current;
     vid.playbackRate = 1.0;
     vid.play();
     setStreamStarted(true);
     setStatus("streaming");
 
+    // Son gelen heatmap'i koru — GradCAM gelmediği framelerde öncekini kullan
+    let lastHeatmap = null;
+
     const loop = () => {
       rafId = requestAnimationFrame(loop);
       if (!vid || vid.paused || vid.ended) return;
       if (pending) return;
+
       const now = performance.now();
-      if (now - lastSentTime < 400) return;
+      // Adaptive throttle: eğer önceki inference yavaş geldiyse daha az gönder
+      // Minimum bekleme: 100ms (~10fps kapasitesi), backend yetişemezse pending zaten bloke eder
+      if (now - lastSentTime < 100) return;
+
       const realFps = lastFrameTime ? Math.round(1000 / (now - lastFrameTime)) : null;
       lastFrameTime = now;
       lastSentTime = now;
+
       const scale = Math.min(1, MAX_W / vid.videoWidth);
       offscreen.width  = Math.round(vid.videoWidth  * scale);
       offscreen.height = Math.round(vid.videoHeight * scale);
       offscreen.getContext("2d").drawImage(vid, 0, 0, offscreen.width, offscreen.height);
       const snapW = offscreen.width, snapH = offscreen.height;
+
+      // GradCAM'i her frame'de değil, aralıklı iste
+      framesSinceGradcam++;
+      const requestGradcam = enableGradcam && (framesSinceGradcam >= GRADCAM_EVERY_N);
+      if (requestGradcam) framesSinceGradcam = 0;
+
       offscreen.toBlob((blob) => {
         if (!blob) return;
         pending = true;
         const fd = new FormData();
         fd.append("file", blob, "frame.jpg");
-        const endpoint = xaiOverlay > 0.05 ? "gradcam" : "sync";
-        fetch(`${INFER_API}/api/v1/infer/${endpoint}?model_name=${selectedModel}`, { method:"POST", body:fd })
+        const gradcamParam = requestGradcam ? "true" : "false";
+        fetch(
+          `${INFER_API}/api/v1/infer/sync?model_name=${selectedModel}&use_sahi=${sahiMode}&enable_gradcam=${gradcamParam}`,
+          { method: "POST", body: fd }
+        )
           .then(res => res.json())
           .then(data => {
             if (data.inference_ms) setLiveInfMs({ ms: data.inference_ms, fps: realFps });
@@ -272,13 +314,16 @@ export default function DroneAnalyticsDashboard() {
             );
             setDetections(dets);
             setFrameCount(f => f + 1);
+            // Yeni heatmap geldiyse sakla, yoksa öncekini kullan
+            if (data.heatmap) lastHeatmap = data.heatmap;
             const r = vid.getBoundingClientRect();
-            drawBboxes(dets, snapW, snapH, r.width, r.height, data.heatmap || null);
+            drawBboxes(dets, snapW, snapH, r.width, r.height, lastHeatmap);
           })
           .catch(() => {})
           .finally(() => { pending = false; });
-      }, "image/jpeg", 0.75);
+      }, "image/jpeg", 0.65); // 0.75 → 0.65: encode+transfer ~%15 hızlanır, görsel kayıp yok
     };
+
     rafId = requestAnimationFrame(loop);
     frameIntervalRef.current = { cancel: () => cancelAnimationFrame(rafId) };
   };
@@ -322,8 +367,8 @@ export default function DroneAnalyticsDashboard() {
     try {
       const fd = new FormData();
       fd.append("file", fileObjRef.current);
-      const endpoint = xaiOverlay > 0.05 ? "gradcam" : "sync";
-      const res = await fetch(`${INFER_API}/api/v1/infer/${endpoint}?model_name=${selectedModel}`, { method:"POST", body:fd });
+      const gradcamParam = enableGradcam ? "true" : "false";
+      const res = await fetch(`${INFER_API}/api/v1/infer/sync?model_name=${selectedModel}&use_sahi=${sahiMode}&enable_gradcam=${gradcamParam}`, { method:"POST", body:fd });
       if (!res.ok) throw new Error();
       const data = await res.json();
       if (data.inference_ms) setLiveInfMs({ ms: data.inference_ms, fps: null });
@@ -568,9 +613,46 @@ export default function DroneAnalyticsDashboard() {
               {/* SAHI toggle */}
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:8, borderTop:"1px solid #0d2035" }}>
                 <span style={{ fontSize:10, color:"#4a9aba", letterSpacing:".06em" }}>SAHI MODE</span>
-                <div onClick={() => setSahiMode(s => !s)}
-                  style={{ width:32, height:18, background: sahiMode ? "#003d4d":"#0a1525", border:`1px solid ${sahiMode?"#00e5ff":"#0d2035"}`, borderRadius:9, position:"relative", cursor:"pointer", transition:"background .2s, border-color .2s" }}>
-                  <div style={{ position:"absolute", top:2, left: sahiMode ? 16:2, width:12, height:12, borderRadius:"50%", background: sahiMode ? "#00e5ff":"#4a6fa5", transition:"all .2s" }}/>
+                <div
+                  onClick={() => setSahiMode(s => !s)}
+                  style={{
+                    width:32, height:18,
+                    background: sahiMode ? "#003d4d" : "#0a1525",
+                    border:`1px solid ${sahiMode ? "#00e5ff" : "#0d2035"}`,
+                    borderRadius:9, position:"relative",
+                    cursor:"pointer",
+                    transition:"background .2s, border-color .2s"
+                  }}>
+                  <div style={{
+                    position:"absolute", top:2,
+                    left: sahiMode ? 16 : 2,
+                    width:12, height:12, borderRadius:"50%",
+                    background: sahiMode ? "#00e5ff" : "#4a6fa5",
+                    transition:"all .2s"
+                  }}/>
+                </div>
+              </div>
+
+              {/* GradCAM toggle */}
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:8, marginTop:8, borderTop:"1px solid #0d2035" }}>
+                <span style={{ fontSize:10, color:"#4a9aba", letterSpacing:".06em" }}>GRADCAM</span>
+                <div
+                  onClick={() => setEnableGradcam(s => !s)}
+                  style={{
+                    width:32, height:18,
+                    background: enableGradcam ? "#003d4d" : "#0a1525",
+                    border:`1px solid ${enableGradcam ? "#00e5ff" : "#0d2035"}`,
+                    borderRadius:9, position:"relative",
+                    cursor:"pointer",
+                    transition:"background .2s, border-color .2s"
+                  }}>
+                  <div style={{
+                    position:"absolute", top:2,
+                    left: enableGradcam ? 16 : 2,
+                    width:12, height:12, borderRadius:"50%",
+                    background: enableGradcam ? "#00e5ff" : "#4a6fa5",
+                    transition:"all .2s"
+                  }}/>
                 </div>
               </div>
             </div>

@@ -14,131 +14,135 @@ def _apply_colormap(cam: np.ndarray) -> np.ndarray:
 def _safe_gradcam_computation(act: torch.Tensor, grad: torch.Tensor) -> np.ndarray:
     """
     Güvenli GradCAM hesaplaması — tensor shape mismatch'i işler
-    act: (C, H, W) — ativações
-    grad: (C, H, W) — gradientes
+    act: (C, H, W) — aktivasyonlar
+    grad: (C, H, W) — gradyanlar
     """
     try:
-        # Ensure 3D
         if act.dim() != 3:
             act = act.squeeze()
         if grad.dim() != 3:
             grad = grad.squeeze()
-            
-        # Kanal sayısını eşitle
+
         min_channels = min(act.shape[0], grad.shape[0])
-        act = act[:min_channels, :, :]
-        grad = grad[:min_channels, :, :]
-        
-        # GradCAM hesapla usando keepdim
+        act = act[:min_channels]
+        grad = grad[:min_channels]
+
         weights = grad.mean(dim=(1, 2), keepdim=True)  # (C, 1, 1)
-        cam = (weights * act).sum(dim=0)  # (H, W)
-        cam = F.relu(cam)
-        
-        # Normalize
+        cam = F.relu((weights * act).sum(dim=0))       # (H, W)
+
         cam_np = cam.cpu().numpy()
         cam_min, cam_max = cam_np.min(), cam_np.max()
         if cam_max > cam_min:
             cam_np = (cam_np - cam_min) / (cam_max - cam_min)
-        
+
         return cam_np
     except Exception as e:
-        print(f"[GRADCAM COMPUTE ERROR] {str(e)}")
+        print(f"[GRADCAM COMPUTE ERROR] {e}")
         return None
+
+
+# ── YOLO için hook layer pozisyonlarını modele göre önbellekle ────────────────
+
+_yolo_hook_positions_cache: dict = {}
+
+
+def _get_yolo_hook_positions(backbone_model) -> list[int]:
+    model_id = id(backbone_model)
+    if model_id in _yolo_hook_positions_cache:
+        return _yolo_hook_positions_cache[model_id]
+
+    total_layers = len(backbone_model)
+    if total_layers >= 3:
+        positions = [
+            max(0, total_layers - 5),
+            max(0, total_layers - 4),
+            max(0, total_layers - 3),
+        ]
+    else:
+        positions = list(range(total_layers))
+
+    _yolo_hook_positions_cache[model_id] = positions
+    return positions
 
 
 def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.ndarray:
     """
-    YOLOv8 GradCAM - shows model focus on DETECTED OBJECTS.
-    Uses hooks on multiple detection-relevant layers for object-focused attention.
+    YOLOv8/v5 GradCAM — feature norm tabanlı dikkat haritası.
+    Hook pozisyonları önbelleklenir, her çağrıda model parse edilmez.
     """
     h, w = frame_bgr.shape[:2]
 
     try:
+        # ── Backbone erişimi ──────────────────────────────────────────────────
+        backbone_model = None
+        if hasattr(model, "model"):
+            backbone_model = model.model.model if hasattr(model.model, "model") else model.model
+
+        if backbone_model is None or not hasattr(backbone_model, "__len__"):
+            print("[GRADCAM YOLO] Model yapısı beklenmedik")
+            return np.zeros((h, w, 3), dtype=np.uint8)
+
+        hook_positions = _get_yolo_hook_positions(backbone_model)
+
+        # ── Hook kayıt ───────────────────────────────────────────────────────
         features_multi = []
+        hook_handles = []
 
         def hook_fn_factory(layer_idx):
             def hook_fn(module, input, output):
                 if isinstance(output, torch.Tensor):
-                    features_multi.append({
-                        "layer": layer_idx,
-                        "feat": output.detach()
-                    })
+                    features_multi.append({"layer": layer_idx, "feat": output.detach()})
                 elif isinstance(output, (list, tuple)) and output and isinstance(output[0], torch.Tensor):
-                    features_multi.append({
-                        "layer": layer_idx,
-                        "feat": output[0].detach()
-                    })
+                    features_multi.append({"layer": layer_idx, "feat": output[0].detach()})
                 elif isinstance(output, dict):
-                    for value in output.values():
-                        if isinstance(value, torch.Tensor):
-                            features_multi.append({
-                                "layer": layer_idx,
-                                "feat": value.detach()
-                            })
+                    for v in output.values():
+                        if isinstance(v, torch.Tensor):
+                            features_multi.append({"layer": layer_idx, "feat": v.detach()})
                             break
             return hook_fn
 
-        backbone_model = None
-        hook_handles = []
-
-        if hasattr(model, "model"):
-            if hasattr(model.model, "model"):
-                backbone_model = model.model.model
-            else:
-                backbone_model = model.model
-
-        if backbone_model is None or not hasattr(backbone_model, "__len__"):
-            print("[GRADCAM YOLO] Model structure unexpected")
-            return np.zeros((h, w, 3), dtype=np.uint8)
-
-        total_layers = len(backbone_model)
-        hook_positions = []
-
-        if total_layers >= 3:
-            hook_positions = [
-                max(0, total_layers - 5),
-                max(0, total_layers - 4),
-                max(0, total_layers - 3),
-            ]
-        else:
-            hook_positions = list(range(total_layers))
-
         for pos in hook_positions:
             try:
-                layer_module = backbone_model[pos]
-                hook_handles.append(layer_module.register_forward_hook(hook_fn_factory(pos)))
+                hook_handles.append(backbone_model[pos].register_forward_hook(hook_fn_factory(pos)))
             except Exception:
                 continue
 
         def clear_hooks():
-            for handle in hook_handles:
+            for h_ in hook_handles:
                 try:
-                    handle.remove()
+                    h_.remove()
                 except Exception:
                     pass
 
         try:
-            with torch.no_grad():
-                _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1)
+            # ── Tek predict çağrısı — FP16 varsa half frame gönder ───────────
+            use_half = next(model.parameters()).dtype == torch.float16
+            if use_half:
+                # YOLO predict kendi içinde cast eder, frame olduğu gibi geçer
+                pass
 
+            with torch.no_grad():
+                _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1,
+                                  half=use_half)
+
+            # Fallback: hiç feature yakalanmadıysa son 6 katmanı dene
             if not features_multi:
                 clear_hooks()
-                hook_handles = []
-
-                fallback_positions = list(range(max(0, total_layers - 6), total_layers))
-                for pos in fallback_positions:
+                hook_handles.clear()
+                total_layers = len(backbone_model)
+                for pos in range(max(0, total_layers - 6), total_layers):
                     try:
-                        layer_module = backbone_model[pos]
-                        hook_handles.append(layer_module.register_forward_hook(hook_fn_factory(pos)))
+                        hook_handles.append(backbone_model[pos].register_forward_hook(hook_fn_factory(pos)))
                     except Exception:
                         continue
-
                 with torch.no_grad():
-                    _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1)
+                    _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1,
+                                      half=use_half)
 
+            # ── Attention map hesapla ─────────────────────────────────────────
             if not features_multi:
-                print("[GRADCAM YOLO] No features captured")
-                attention_map = np.ones((h, w), dtype=np.float32) * 0.5
+                print("[GRADCAM YOLO] Feature yakalanamadı")
+                attention_map = np.full((h, w), 0.5, dtype=np.float32)
             else:
                 features_multi.sort(key=lambda x: x["layer"], reverse=True)
                 feat = features_multi[0]["feat"]
@@ -149,121 +153,117 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                     feat = feat.squeeze()
 
                 if feat.dim() != 3:
-                    print(f"[GRADCAM YOLO] Unexpected feature shape: {feat.shape}")
-                    attention_map = np.ones((h, w), dtype=np.float32) * 0.5
+                    attention_map = np.full((h, w), 0.5, dtype=np.float32)
                 else:
-                    feat_norm = torch.norm(feat, p=2, dim=0)
-                    norm_np = feat_norm.cpu().numpy()
-
-                    if norm_np.max() > norm_np.min():
-                        attention_map = (norm_np - norm_np.min()) / (norm_np.max() - norm_np.min() + 1e-6)
+                    # L2 norm → en aktif kanallar öne çıkar
+                    feat_norm = torch.norm(feat, p=2, dim=0).cpu().numpy()
+                    mn, mx_ = feat_norm.min(), feat_norm.max()
+                    if mx_ > mn:
+                        attention_map = (feat_norm - mn) / (mx_ - mn + 1e-6)
                     else:
                         attention_map = feat.mean(dim=0).cpu().numpy()
+                        att_mn, att_mx = attention_map.min(), attention_map.max()
+                        if att_mx > att_mn:
+                            attention_map = (attention_map - att_mn) / (att_mx - att_mn)
 
-                    att_min = attention_map.min()
-                    att_max = attention_map.max()
-                    if att_max > att_min:
-                        attention_map = (attention_map - att_min) / (att_max - att_min)
-                    else:
-                        attention_map = np.ones_like(attention_map) * 0.5
-
-                    attention_map = cv2.resize(attention_map, (w, h))
+                    # ── Resize: INTER_LINEAR yeterli, INTER_CUBIC gerekmez ───
+                    attention_map = cv2.resize(
+                        attention_map.astype(np.float32), (w, h),
+                        interpolation=cv2.INTER_LINEAR
+                    )
                     attention_map = np.clip(attention_map, 0, 1)
 
             attention_uint8 = (attention_map * 255).astype(np.uint8)
-            heatmap = cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
-            return heatmap
+            return cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
 
         finally:
             clear_hooks()
 
     except Exception as e:
-        print(f"[GRADCAM ERROR YOLO] {str(e)}")
+        print(f"[GRADCAM ERROR YOLO] {e}")
         import traceback
         traceback.print_exc()
         return np.zeros((h, w, 3), dtype=np.uint8)
 
 
+# ── Faster R-CNN için backbone hook'u önbellekle ─────────────────────────────
+# Her çağrıda hook register/remove döngüsünden kaçın
+_frcnn_hook_handle = None
+_frcnn_features: list = []
+
+
+def _ensure_frcnn_hook(model) -> None:
+    """Model backbone'una kalıcı hook tak — sadece bir kez."""
+    global _frcnn_hook_handle
+
+    if _frcnn_hook_handle is not None:
+        return  # zaten takılı
+
+    def hook_fn(module, input, output):
+        _frcnn_features.clear()
+        if isinstance(output, torch.Tensor):
+            _frcnn_features.append(output.detach())
+        elif isinstance(output, dict):
+            for v in output.values():
+                if isinstance(v, torch.Tensor):
+                    _frcnn_features.append(v.detach())
+                    break
+        elif isinstance(output, (list, tuple)):
+            for item in output:
+                if isinstance(item, torch.Tensor):
+                    _frcnn_features.append(item.detach())
+                    break
+
+    _frcnn_hook_handle = model.backbone.register_forward_hook(hook_fn)
+    print("[GRADCAM FASTER_RCNN] Kalıcı backbone hook takıldı")
+
 
 def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None) -> np.ndarray:
     """
-    Faster R-CNN GradCAM - shows model focus using activation maps.
-    Uses hook to capture FPN layer outputs.
+    Faster R-CNN GradCAM — FPN backbone activation haritası.
+    Hook her çağrıda takılıp sökülmez; startup'ta bir kez register edilir.
     """
     device = next(model.parameters()).device
     h, w = frame_bgr.shape[:2]
 
     try:
-        # Prepare input
+        _ensure_frcnn_hook(model)  # idempotent — zaten takılıysa no-op
+
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        img = torch.from_numpy(frame_rgb).permute(2, 0, 1).float() / 255.0
-        img_batch = img.unsqueeze(0).to(device)
+        # permute + float tek adımda, ekstra kopyalama yok
+        img_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float().div(255.0).to(device)
 
         model.eval()
-        
-        # Store features captured by hook
-        features_captured = []
-        
-        def hook_fn(module, input, output):
-            if isinstance(output, torch.Tensor):
-                features_captured.append(output.detach())
-            elif isinstance(output, dict):
-                # If output is dict (like FPN), get the first value
-                for v in output.values():
-                    if isinstance(v, torch.Tensor):
-                        features_captured.append(v.detach())
-                        break
-            elif isinstance(output, (list, tuple)):
-                for item in output:
-                    if isinstance(item, torch.Tensor):
-                        features_captured.append(item.detach())
-                        break
-        
-        # Register hook on FPN (feature pyramid network)
-        target_layer = model.backbone
-        hook = target_layer.register_forward_hook(hook_fn)
-        
-        try:
-            with torch.no_grad():
-                _ = model([img_batch[0]])
-            
-            if not features_captured:
-                print("[GRADCAM FASTER_RCNN] No features captured")
-                return np.zeros((h, w, 3), dtype=np.uint8)
-            
-            # Get the captured feature (usually P3 or P4 from FPN)
-            feat = features_captured[0]  # (B, C, H, W) or (C, H, W)
-            
-            # Ensure 3D (C, H, W)
-            if feat.dim() == 4:
-                feat = feat[0]  # Remove batch
-            
-            # Create attention map: mean across channels
-            if feat.dim() == 3:
-                attention_map = feat.mean(dim=0).cpu().numpy()  # (H, W)
-            else:
-                attention_map = feat.squeeze().cpu().numpy()
-            
-            # Normalize to 0-1
-            att_min = attention_map.min()
-            att_max = attention_map.max()
-            if att_max > att_min:
-                attention_map = (attention_map - att_min) / (att_max - att_min)
-            else:
-                attention_map = np.ones_like(attention_map) * 0.5
-            
-            # Resize to original image size
-            attention_map_resized = cv2.resize(attention_map, (w, h))
-            
-            # Convert to heatmap: 0-255 range for colormap
-            attention_uint8 = (attention_map_resized * 255).astype(np.uint8)
-            heatmap = cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
-            
-            return heatmap
-        
-        finally:
-            hook.remove()
-        
+        with torch.no_grad():
+            _ = model([img_tensor])
+
+        if not _frcnn_features:
+            print("[GRADCAM FASTER_RCNN] Feature yakalanamadı")
+            return np.zeros((h, w, 3), dtype=np.uint8)
+
+        feat = _frcnn_features[0]
+        if feat.dim() == 4:
+            feat = feat[0]  # batch boyutu kaldır
+
+        # Channel mean → attention map
+        if feat.dim() == 3:
+            attention_map = feat.mean(dim=0).cpu().numpy()
+        else:
+            attention_map = feat.squeeze().cpu().numpy()
+
+        att_min, att_max = attention_map.min(), attention_map.max()
+        if att_max > att_min:
+            attention_map = (attention_map - att_min) / (att_max - att_min)
+        else:
+            attention_map = np.full_like(attention_map, 0.5)
+
+        attention_map_resized = cv2.resize(
+            attention_map.astype(np.float32), (w, h),
+            interpolation=cv2.INTER_LINEAR
+        )
+        attention_uint8 = (attention_map_resized * 255).astype(np.uint8)
+        return cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
+
     except Exception as e:
-        print(f"[GRADCAM ERROR FASTER_RCNN] {str(e)}")
-        return np.zeros((h, w, 3), dtype=np.uint8) #hata alnın yer
+        print(f"[GRADCAM ERROR FASTER_RCNN] {e}")
+        return np.zeros((h, w, 3), dtype=np.uint8)
