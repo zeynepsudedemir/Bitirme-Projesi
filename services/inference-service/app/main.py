@@ -70,7 +70,6 @@ def _load_models():
     # ── YOLOv5 ───────────────────────────────────────────────────────────────
     models["yolov5"] = YOLO("app/models/yolov5.pt")
     models["yolov5"].to(device)
-    # Warmup 
     _warmup_yolo(models["yolov5"], device)
 
     # ── YOLOv8 ───────────────────────────────────────────────────────────────
@@ -243,7 +242,7 @@ async def infer_sync(
             lambda: _run_inference(model_name, frame, frame_id)
         )
 
-    # GradCAM: önbellekli — her frame'de tam hesaplama yapılmaz
+    # GradCAM: önbellekli — her frame'de hesaplama yapılmıyo
     heatmap_b64 = None
     if enable_gradcam:
         heatmap_b64 = await asyncio.get_event_loop().run_in_executor(
@@ -268,28 +267,26 @@ def _run_inference(model_name: str, frame: np.ndarray, frame_id: str, conf_thres
     if model_name in ("yolov5", "yolov8"):
         yolo_model = models[model_name]
 
-        # ── Frame boyutunu modele göre AGRESIF optimize et ──────────────────
-        # Daha küçük resolution = daha hızlı inference
         # YOLO imgsz: 32'nin katı olmalı, max 640, min 320
         h, w = frame.shape[:2]
         long_side = max(h, w)
         if long_side <= 360:
-            imgsz = 320   # Çok küçük → 320
+            imgsz = 320   
         elif long_side <= 480:
-            imgsz = 416   # Orta → 416 (default, hızlı)
+            imgsz = 416   
         elif long_side <= 600:
-            imgsz = 480   # Biraz büyük → 480
+            imgsz = 480   
         else:
-            imgsz = 544   # Büyük → 544 (640'dan daha hızlı)
+            imgsz = 544   
 
         t0 = time.perf_counter()
         results = yolo_model(
             frame,
             conf=threshold,
             imgsz=imgsz,
-            verbose=False,           # Log baskı kapatıldı
-            half=torch.cuda.is_available(),  # GPU varsa FP16
-            device=0 if torch.cuda.is_available() else "cpu",  # Explicit device
+            verbose=False,           
+            half=torch.cuda.is_available(),  
+            device=0 if torch.cuda.is_available() else "cpu",  
         )
         inference_ms = int((time.perf_counter() - t0) * 1000)
         if inference_ms > 200:

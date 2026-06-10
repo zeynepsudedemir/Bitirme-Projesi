@@ -18,7 +18,7 @@ const CLASS_COLORS = {
 };
 const ALL_CLASSES = Object.keys(CLASS_COLORS);
 
-// Sadece UI metadata — skorlar backend /api/v1/models/metrics'ten gelir
+
 const MODELS = [
   { id: "yolov8",      label: "YOLOv8"       },
   { id: "yolov5",      label: "YOLOv5"       },
@@ -79,7 +79,7 @@ export default function DroneAnalyticsDashboard() {
 
   const currentModelData = MODELS.find(md => md.id === selectedModel);
 
-  // Fetch model metrics from backend (test set scores)
+
   useEffect(() => {
     fetch(`${INFER_API}/api/v1/models/metrics`)
       .then(r => r.json())
@@ -87,13 +87,11 @@ export default function DroneAnalyticsDashboard() {
       .catch(() => {});
   }, []);
 
-  // Model değişince liveInfMs sıfırla
+
   useEffect(() => { setLiveInfMs(null); }, [selectedModel]);
 
   const mx = modelMetrics[selectedModel] || {};
 
-  // Live detection log
-  // ESKI BLOĞU (95-112 arası) SİL, YERİNE BU GELİR:
 
   useEffect(() => {
     if (detections.length === 0) return;
@@ -102,11 +100,11 @@ export default function DroneAnalyticsDashboard() {
     const ts = [now.getHours(), now.getMinutes(), now.getSeconds()]
       .map(v => v.toString().padStart(2, "0")).join(":");
 
-    // Her frame'deki tespitleri grupla: {car: 3, pedestrian: 2, ...}
+    
     const counts = {};
     detections.forEach(d => { counts[d.label] = (counts[d.label] || 0) + 1; });
 
-    // Her label için bir log satırı üret (max 3 satır)
+    // log satırı üretimi
     const newLines = Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
@@ -165,7 +163,7 @@ export default function DroneAnalyticsDashboard() {
       const sw  = (x2 - x1) * scale;
       const sh  = (y2 - y1) * scale;
 
-      // Sahte XAI — sadece gerçek heatmap yoksa
+
       if (!heatmapB64 && xaiOverlay > 0.05) {
         const cx = sx1 + sw/2, cy = sy1 + sh/2;
         const r = Math.min(sw, sh) * 0.7;
@@ -179,16 +177,16 @@ export default function DroneAnalyticsDashboard() {
         ctx.globalAlpha = 1;
       }
 
-      // bbox fill
+      
       ctx.fillStyle = color + "18";
       ctx.fillRect(sx1, sy1, sw, sh);
 
-      // bbox border
+      
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(sx1, sy1, sw, sh);
 
-      // corner brackets
+    
       const cs = 10;
       [[sx1,sy1],[sx1+sw,sy1],[sx1,sy1+sh],[sx1+sw,sy1+sh]].forEach(([cx,cy], i) => {
         const dx = i%2===0 ? 1 : -1, dy = i<2 ? 1 : -1;
@@ -198,7 +196,7 @@ export default function DroneAnalyticsDashboard() {
         ctx.stroke();
       });
 
-      // label bg + text
+      
       const text = `${det.label} ${det.confidence.toFixed(2)}`;
       ctx.font = "bold 10px 'Courier New', monospace";
       const tw = ctx.measureText(text).width;
@@ -251,16 +249,16 @@ export default function DroneAnalyticsDashboard() {
     if (!fileObjRef.current || !videoRef.current) return;
     const offscreen = document.createElement("canvas");
 
-    // ── Çözünürlük: backend 640'a resize yapıyor, biz de aynısını gönderelim ──
-    const MAX_W = 480; // 640→480: encode+transfer hızlanır, model yine 640'a resize eder
+    
+    const MAX_W = 480; 
 
     let rafId;
     let pending = false;
     let lastSentTime = 0;
     let lastFrameTime = 0;
-    // GradCAM: her N inference frame'de bir istenir (backend zaten önbellekliyor)
+    
     let framesSinceGradcam = 0;
-    const GRADCAM_EVERY_N = 8; // her 8 inference frame'de 1 gradcam isteği
+    const GRADCAM_EVERY_N = 8; // her 8 framede 1 gradcam
 
     const vid = videoRef.current;
     vid.playbackRate = 1.0;
@@ -277,8 +275,8 @@ export default function DroneAnalyticsDashboard() {
       if (pending) return;
 
       const now = performance.now();
-      // Adaptive throttle: eğer önceki inference yavaş geldiyse daha az gönder
-      // Minimum bekleme: 100ms (~10fps kapasitesi), backend yetişemezse pending zaten bloke eder
+      
+      
       if (now - lastSentTime < 100) return;
 
       const realFps = lastFrameTime ? Math.round(1000 / (now - lastFrameTime)) : null;
@@ -291,7 +289,7 @@ export default function DroneAnalyticsDashboard() {
       offscreen.getContext("2d").drawImage(vid, 0, 0, offscreen.width, offscreen.height);
       const snapW = offscreen.width, snapH = offscreen.height;
 
-      // GradCAM'i her frame'de değil, aralıklı iste
+      // GradCAM'i aralıklı iste
       framesSinceGradcam++;
       const requestGradcam = enableGradcam && (framesSinceGradcam >= GRADCAM_EVERY_N);
       if (requestGradcam) framesSinceGradcam = 0;
@@ -314,14 +312,14 @@ export default function DroneAnalyticsDashboard() {
             );
             setDetections(dets);
             setFrameCount(f => f + 1);
-            // Yeni heatmap geldiyse sakla, yoksa öncekini kullan
+            
             if (data.heatmap) lastHeatmap = data.heatmap;
             const r = vid.getBoundingClientRect();
             drawBboxes(dets, snapW, snapH, r.width, r.height, lastHeatmap);
           })
           .catch(() => {})
           .finally(() => { pending = false; });
-      }, "image/jpeg", 0.65); // 0.75 → 0.65: encode+transfer ~%15 hızlanır, görsel kayıp yok
+      }, "image/jpeg", 0.65); 
     };
 
     rafId = requestAnimationFrame(loop);

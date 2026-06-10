@@ -24,8 +24,6 @@ app.add_middleware(
 )
 
 
-# ── Pydantic modeller ──────────────────────────────────────────────────────
-
 class StartStreamRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
@@ -40,7 +38,7 @@ class UpdateModelRequest(BaseModel):
     model_name: str
 
 
-# ── REST endpoint'ler ──────────────────────────────────────────────────────
+# endpointler
 
 @app.get("/health")
 def health():
@@ -110,7 +108,7 @@ def update_model(drone_id: str, req: UpdateModelRequest):
         raise HTTPException(status_code=500, detail="Model güncellenemedi")
 
 
-# ── WebSocket ──────────────────────────────────────────────────────────────
+#WebSocket bağlantısı
 
 @app.websocket("/ws/{drone_id}")
 async def websocket_endpoint(websocket: WebSocket, drone_id: str):
@@ -136,7 +134,6 @@ async def websocket_endpoint(websocket: WebSocket, drone_id: str):
 
     try:
         while True:
-            # Bağlantıyı açık tutmak için ping bekle, client disconnect ederse hata fırlar
             await websocket.receive_text()
     except WebSocketDisconnect:
         logger.info(f"[WS] Ayrıldı → drone_id={drone_id}")

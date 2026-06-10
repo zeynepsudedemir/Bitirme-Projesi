@@ -1,9 +1,9 @@
-#tüm ayarlar tek bir dosyada toplanır
+
 import os
 
 class Settings:
-    STREAM_SOURCE:str=os.getenv("STREAM_SOURCE", "0")  # varsayılan olarak webcam
-    FRAME_SKIP:int=int(os.getenv("FRAME_SKIP", "1"))  # her n. frame'ı işle
+    STREAM_SOURCE:str=os.getenv("STREAM_SOURCE", "0")  #webcam
+    FRAME_SKIP:int=int(os.getenv("FRAME_SKIP", "1"))  # her n. frame
     MODEL_NAME:str=os.getenv("MODEL_NAME", "yolov8")  # varsayılan model
     CONFIDENCE_THRESHOLD:float=float(os.getenv("CONFIDENCE_THRESHOLD", "0.4"))  # varsayılan eşik değeri
 

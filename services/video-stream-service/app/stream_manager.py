@@ -46,10 +46,9 @@ class StreamInfo:
         }
 
 
-# ── WebSocket bağlantı havuzu ──────────────────────────────────────────────
+#WebSocket bağlantı
 class ConnectionManager:
     def __init__(self):
-        # drone_id → set of WebSocket connections
         self._clients: dict[str, set] = {}
         self._lock = threading.Lock()
 
@@ -63,7 +62,6 @@ class ConnectionManager:
                 self._clients[drone_id].discard(ws)
 
     def broadcast(self, drone_id: str, payload: dict) -> None:
-        """Stream worker thread'inden çağrılır — asyncio loop'a gönderir."""
         with self._lock:
             clients = list(self._clients.get(drone_id, []))
         for ws_tuple in clients:
@@ -74,7 +72,6 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
-# ──────────────────────────────────────────────────────────────────────────
 
 
 class StreamManager:
@@ -135,7 +132,7 @@ class StreamManager:
             info.model_name = model_name
             logger.info(f"[STREAM] Model değiştirildi → drone_id={drone_id} model={model_name}")
 
-    # ── Worker ────────────────────────────────────────────────────────────
+    #Worker
     def _worker(self, info: StreamInfo) -> None:
         source = int(info.source) if info.source.isdigit() else info.source
         cap = cv2.VideoCapture(source)
@@ -193,7 +190,7 @@ class StreamManager:
                 self.streams.pop(info.drone_id, None)
             logger.info(f"[STREAM] Kapandı → {info.drone_id}")
 
-    # ── Inference ─────────────────────────────────────────────────────────
+    #Inference servisine gönderme
     def _send_to_inference(self, frame, info: StreamInfo) -> Optional[list]:
         try:
             success, buffer = cv2.imencode(".jpg", frame)

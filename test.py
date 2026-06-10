@@ -1,7 +1,7 @@
 import urllib.request
 import json
 
-# Test görüntüsünü container'a kopyala
+# görüntü containera kopyala
 import subprocess
 subprocess.run([
     "docker", "cp",
@@ -9,7 +9,7 @@ subprocess.run([
     "drone_inference:/tmp/test.jpg"
 ])
 
-# Container içinde test et
+#test 
 result = subprocess.run([
     "docker", "exec", "drone_inference",
     "python3", "-c", """

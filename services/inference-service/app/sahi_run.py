@@ -141,8 +141,8 @@ def run_sahi_inference(
             slice_width=slice_size,
             overlap_height_ratio=overlap_ratio,
             overlap_width_ratio=overlap_ratio,
-            verbose=0,          # log gürültüsünü kapat
-            perform_standard_pred=True,   # tam görüntüde de bir kez çalıştır
+            verbose=0,          
+            perform_standard_pred=True,   
         )
         inference_ms = int((time.perf_counter() - t0) * 1000)
         print(f"[SAHI] {model_name} inference={inference_ms}ms | "

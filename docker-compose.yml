@@ -74,7 +74,7 @@ services:
     volumes:
       - ./services/video-stream-service/app:/app/app
     #devices:
-    #  - "/dev/video0:/dev/video0" # Kamerayı konteynere bağla
+    #  - "/dev/video0:/dev/video0" # Kamerayı konteynere bağlama
 
 
 

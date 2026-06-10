@@ -3,11 +3,11 @@ import json
 import cv2
 import ast
 
-# 1. Görüntüyü container'a kopyala
+
 image_path = r"C:\Users\HP\Desktop\VisDrone\images\test\9999947_00000_d_0000023.jpg"
 subprocess.run(["docker", "cp", image_path, "drone_inference:/tmp/test.jpg"])
 
-# 2. Inference çalıştır
+
 result = subprocess.run([
     "docker", "exec", "drone_inference",
     "python3", "-c", """
@@ -24,7 +24,7 @@ print(json.dumps(resp.json()))
 data = json.loads(result.stdout)
 detections = data["detections"]
 
-# 3. Görüntü üzerine çiz
+
 img = cv2.imread(image_path)
 
 colors = {
@@ -57,7 +57,6 @@ for det in detections:
         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
     )
 
-# 4. Kaydet ve aç
 output_path = r"C:\Users\HP\Desktop\result3.jpg"
 cv2.imwrite(output_path, img)
 print(f"Kaydedildi: {output_path}")

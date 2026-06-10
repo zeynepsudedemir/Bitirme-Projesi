@@ -41,7 +41,7 @@ def _safe_gradcam_computation(act: torch.Tensor, grad: torch.Tensor) -> np.ndarr
         return None
 
 
-# ── YOLO için hook layer pozisyonlarını modele göre önbellekle ────────────────
+#YOLO için hook önbellek
 
 _yolo_hook_positions_cache: dict = {}
 
@@ -73,7 +73,7 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
     h, w = frame_bgr.shape[:2]
 
     try:
-        # ── Backbone erişimi ──────────────────────────────────────────────────
+        #backbone
         backbone_model = None
         if hasattr(model, "model"):
             backbone_model = model.model.model if hasattr(model.model, "model") else model.model
@@ -84,7 +84,7 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
 
         hook_positions = _get_yolo_hook_positions(backbone_model)
 
-        # ── Hook kayıt ───────────────────────────────────────────────────────
+        #hook
         features_multi = []
         hook_handles = []
 
@@ -115,17 +115,17 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                     pass
 
         try:
-            # ── Tek predict çağrısı — FP16 varsa half frame gönder ───────────
+            
             use_half = next(model.parameters()).dtype == torch.float16
             if use_half:
-                # YOLO predict kendi içinde cast eder, frame olduğu gibi geçer
+                
                 pass
 
             with torch.no_grad():
                 _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1,
                                   half=use_half)
 
-            # Fallback: hiç feature yakalanmadıysa son 6 katmanı dene
+            # Fallback
             if not features_multi:
                 clear_hooks()
                 hook_handles.clear()
@@ -139,7 +139,7 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                     _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1,
                                       half=use_half)
 
-            # ── Attention map hesapla ─────────────────────────────────────────
+            #Attention map hesabı
             if not features_multi:
                 print("[GRADCAM YOLO] Feature yakalanamadı")
                 attention_map = np.full((h, w), 0.5, dtype=np.float32)
@@ -155,7 +155,7 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                 if feat.dim() != 3:
                     attention_map = np.full((h, w), 0.5, dtype=np.float32)
                 else:
-                    # L2 norm → en aktif kanallar öne çıkar
+                    
                     feat_norm = torch.norm(feat, p=2, dim=0).cpu().numpy()
                     mn, mx_ = feat_norm.min(), feat_norm.max()
                     if mx_ > mn:
@@ -166,7 +166,7 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                         if att_mx > att_mn:
                             attention_map = (attention_map - att_mn) / (att_mx - att_mn)
 
-                    # ── Resize: INTER_LINEAR yeterli, INTER_CUBIC gerekmez ───
+                    #Resize
                     attention_map = cv2.resize(
                         attention_map.astype(np.float32), (w, h),
                         interpolation=cv2.INTER_LINEAR
@@ -186,8 +186,7 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
         return np.zeros((h, w, 3), dtype=np.uint8)
 
 
-# ── Faster R-CNN için backbone hook'u önbellekle ─────────────────────────────
-# Her çağrıda hook register/remove döngüsünden kaçın
+#Faster R-CNN backbone hook
 _frcnn_hook_handle = None
 _frcnn_features: list = []
 
@@ -227,10 +226,10 @@ def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None) -
     h, w = frame_bgr.shape[:2]
 
     try:
-        _ensure_frcnn_hook(model)  # idempotent — zaten takılıysa no-op
+        _ensure_frcnn_hook(model)  
 
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        # permute + float tek adımda, ekstra kopyalama yok
+        
         img_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float().div(255.0).to(device)
 
         model.eval()
@@ -245,7 +244,6 @@ def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None) -
         if feat.dim() == 4:
             feat = feat[0]  # batch boyutu kaldır
 
-        # Channel mean → attention map
         if feat.dim() == 3:
             attention_map = feat.mean(dim=0).cpu().numpy()
         else:
