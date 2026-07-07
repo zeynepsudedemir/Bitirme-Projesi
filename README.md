@@ -199,6 +199,7 @@ dronevision/
 │           └── models/          # .pt / .pth weight files (not tracked by git)
 ├── test.py                      # Local integration test script
 ├── vis.py                       # Local visualization script (OpenCV)
+├── video_trans.py               # Divides the video into frames 
 └── README.md
 ```
 
