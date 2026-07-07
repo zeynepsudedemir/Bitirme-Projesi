@@ -1,13 +1,16 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
-
+ 
 def get_connection():
+    password = os.getenv("POSTGRES_PASSWORD")
+    if not password:
+        raise RuntimeError("şifre tanımlı değil, .env dosyasını kontroledin")
     return psycopg2.connect(
         host=os.getenv("POSTGRES_HOST", "postgres"),
         database=os.getenv("POSTGRES_DB", "dronedb"),
-        user=os.getenv("POSTGRES_USER", "droneuser"),
-        password=os.getenv("POSTGRES_PASSWORD", "dronepassword")
+        user=os.getenv("POSTGRES_USER", "drone"),
+        password=password,
     )
 def init_db():
     conn =get_connection()

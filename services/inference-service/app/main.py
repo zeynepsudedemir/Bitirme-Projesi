@@ -301,6 +301,7 @@ def _run_inference(model_name: str, frame: np.ndarray, frame_id: str, conf_thres
                     "confidence": round(float(box.conf), 3),
                     "bbox": {"x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2)}
                 })
+                _save_detection(frame_id, model_name, detections[-1])
 
     elif model_name == "faster_rcnn":
         device = next(models["faster_rcnn"].parameters()).device
@@ -324,6 +325,7 @@ def _run_inference(model_name: str, frame: np.ndarray, frame_id: str, conf_thres
                     "x2": int(box[2]), "y2": int(box[3])
                 }
             })
+            _save_detection(frame_id, model_name, detections[-1])
 
     return detections, inference_ms
 
@@ -340,6 +342,7 @@ def _save_detection(frame_id: str, model_name: str, det: dict):
         conn.commit()
         cur.close()
         conn.close()
+        print(f"[DB] Kaydedildi: {det['label']} - {det['confidence']}")
     except Exception as e:
         print(f"[DB ERROR] {e}")
 
