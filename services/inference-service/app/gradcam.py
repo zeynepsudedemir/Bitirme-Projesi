@@ -30,7 +30,7 @@ def _safe_gradcam_computation(act: torch.Tensor, grad: torch.Tensor) -> np.ndarr
         weights = grad.mean(dim=(1, 2), keepdim=True)  # (C, 1, 1)
         cam = F.relu((weights * act).sum(dim=0))       # (H, W)
 
-        cam_np = cam.cpu().numpy()
+        cam_np = cam.detach().cpu().numpy()
         cam_min, cam_max = cam_np.min(), cam_np.max()
         if cam_max > cam_min:
             cam_np = (cam_np - cam_min) / (cam_max - cam_min)
@@ -39,6 +39,22 @@ def _safe_gradcam_computation(act: torch.Tensor, grad: torch.Tensor) -> np.ndarr
     except Exception as e:
         print(f"[GRADCAM COMPUTE ERROR] {e}")
         return None
+
+
+def _extract_first_tensor(output):
+    if isinstance(output, torch.Tensor):
+        return output
+    if isinstance(output, (list, tuple)):
+        for item in output:
+            tensor = _extract_first_tensor(item)
+            if isinstance(tensor, torch.Tensor):
+                return tensor
+    if isinstance(output, dict):
+        for v in output.values():
+            tensor = _extract_first_tensor(v)
+            if isinstance(tensor, torch.Tensor):
+                return tensor
+    return None
 
 
 #YOLO için hook önbellek
@@ -65,9 +81,10 @@ def _get_yolo_hook_positions(backbone_model) -> list[int]:
     return positions
 
 
-def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.ndarray:
+def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None,
+                 enable_gradcam: bool = False, top_k: int = 1, max_side: int = 960) -> np.ndarray:
     """
-    YOLOv8/v5 GradCAM — feature norm tabanlı dikkat haritası.
+    YOLOv8/v5 GradCAM — standard GradCAM activation-gradient attention map.
     Hook pozisyonları önbelleklenir, her çağrıda model parse edilmez.
     """
     h, w = frame_bgr.shape[:2]
@@ -87,18 +104,33 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
         #hook
         features_multi = []
         hook_handles = []
+        grads = {}
+
+        use_real_gradcam = bool(enable_gradcam)
+        proc_frame = frame_bgr
+        if max_side is not None:
+            h0, w0 = frame_bgr.shape[:2]
+            scale = min(1.0, float(max_side) / max(h0, w0))
+            if scale < 1.0:
+                proc_frame = cv2.resize(frame_bgr, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_LINEAR)
+
+        print(f"[GRADCAM YOLO] enabled={enable_gradcam} detections={bool(detections)} in_shape={frame_bgr.shape} proc_shape={proc_frame.shape}")
 
         def hook_fn_factory(layer_idx):
             def hook_fn(module, input, output):
-                if isinstance(output, torch.Tensor):
-                    features_multi.append({"layer": layer_idx, "feat": output.detach()})
-                elif isinstance(output, (list, tuple)) and output and isinstance(output[0], torch.Tensor):
-                    features_multi.append({"layer": layer_idx, "feat": output[0].detach()})
-                elif isinstance(output, dict):
-                    for v in output.values():
-                        if isinstance(v, torch.Tensor):
-                            features_multi.append({"layer": layer_idx, "feat": v.detach()})
-                            break
+                tensor = _extract_first_tensor(output)
+                if tensor is None:
+                    return
+
+                features_multi.append({"layer": layer_idx, "feat": tensor})
+
+                if tensor.requires_grad:
+                    def _record_grad(grad, idx=layer_idx):
+                        grads[idx] = grad.detach()
+                    try:
+                        tensor.register_hook(_record_grad)
+                    except Exception:
+                        pass
             return hook_fn
 
         for pos in hook_positions:
@@ -117,15 +149,43 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
         try:
             
             use_half = next(model.parameters()).dtype == torch.float16
+            device = next(model.parameters()).device
+            proc_frame_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
+            img_tensor = torch.from_numpy(proc_frame_rgb).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
             if use_half:
-                
-                pass
+                img_tensor = img_tensor.half()
+            img_tensor.requires_grad_(use_real_gradcam)
 
-            with torch.no_grad():
-                _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1,
-                                  half=use_half)
+            if use_real_gradcam:
+                try:
+                    outputs = model.model(img_tensor)
+                    S = None
 
-            # Fallback
+                    if isinstance(outputs, tuple) and len(outputs) > 1 and isinstance(outputs[1], dict):
+                        scores = outputs[1].get("scores")
+                        if isinstance(scores, torch.Tensor) and scores.numel() > 0:
+                            S = scores.view(-1).max()
+
+                    if S is None and isinstance(outputs, torch.Tensor):
+                        S = outputs.mean()
+                    elif S is None:
+                        first_tensor = _extract_first_tensor(outputs)
+                        if isinstance(first_tensor, torch.Tensor):
+                            S = first_tensor.mean()
+
+                    if S is not None:
+                        model.model.zero_grad(set_to_none=True)
+                        S.backward(retain_graph=False)
+                    else:
+                        with torch.no_grad():
+                            _ = model.predict(proc_frame, verbose=False, imgsz=640, conf=0.1, half=use_half)
+                except Exception:
+                    with torch.no_grad():
+                        _ = model.predict(proc_frame, verbose=False, imgsz=640, conf=0.1, half=use_half)
+            else:
+                with torch.no_grad():
+                    _ = model.predict(proc_frame, verbose=False, imgsz=640, conf=0.1, half=use_half)
+
             if not features_multi:
                 clear_hooks()
                 hook_handles.clear()
@@ -136,8 +196,7 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                     except Exception:
                         continue
                 with torch.no_grad():
-                    _ = model.predict(frame_bgr, verbose=False, imgsz=640, conf=0.1,
-                                      half=use_half)
+                    _ = model.predict(proc_frame, verbose=False, imgsz=640, conf=0.1, half=use_half)
 
             #Attention map hesabı
             if not features_multi:
@@ -145,17 +204,18 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                 attention_map = np.full((h, w), 0.5, dtype=np.float32)
             else:
                 features_multi.sort(key=lambda x: x["layer"], reverse=True)
-                feat = features_multi[0]["feat"]
+                best = features_multi[0]
+                feat = best["feat"]
+                grad = grads.get(best["layer"], None)
 
                 if feat.dim() == 4:
                     feat = feat[0]
-                elif feat.dim() != 3:
-                    feat = feat.squeeze()
+                if grad is not None and grad.dim() == 4:
+                    grad = grad[0]
+                elif grad is not None and grad.dim() == 5:
+                    grad = grad[0]
 
-                if feat.dim() != 3:
-                    attention_map = np.full((h, w), 0.5, dtype=np.float32)
-                else:
-                    
+                if feat.dim() != 3 or grad is None:
                     feat_norm = torch.norm(feat, p=2, dim=0).cpu().numpy()
                     mn, mx_ = feat_norm.min(), feat_norm.max()
                     if mx_ > mn:
@@ -165,13 +225,26 @@ def gradcam_yolo(model, frame_bgr: np.ndarray, detections: list = None) -> np.nd
                         att_mn, att_mx = attention_map.min(), attention_map.max()
                         if att_mx > att_mn:
                             attention_map = (attention_map - att_mn) / (att_mx - att_mn)
+                else:
+                    cam_np = _safe_gradcam_computation(feat, grad)
+                    if cam_np is not None:
+                        attention_map = cam_np
+                    else:
+                        attention_map = torch.norm(feat, p=2, dim=0).cpu().numpy()
+                        mn, mx_ = attention_map.min(), attention_map.max()
+                        if mx_ > mn:
+                            attention_map = (attention_map - mn) / (mx_ - mn + 1e-6)
+                        else:
+                            attention_map = feat.mean(dim=0).cpu().numpy()
+                            att_mn, att_mx = attention_map.min(), attention_map.max()
+                            if att_mx > att_mn:
+                                attention_map = (attention_map - att_mn) / (att_mx - att_mn)
 
-                    #Resize
-                    attention_map = cv2.resize(
-                        attention_map.astype(np.float32), (w, h),
-                        interpolation=cv2.INTER_LINEAR
-                    )
-                    attention_map = np.clip(attention_map, 0, 1)
+                attention_map = cv2.resize(
+                    attention_map.astype(np.float32), (w, h),
+                    interpolation=cv2.INTER_LINEAR
+                )
+                attention_map = np.clip(attention_map, 0, 1)
 
             attention_uint8 = (attention_map * 255).astype(np.uint8)
             return cv2.applyColorMap(attention_uint8, cv2.COLORMAP_JET)
@@ -217,7 +290,8 @@ def _ensure_frcnn_hook(model) -> None:
     print("[GRADCAM FASTER_RCNN] Kalıcı backbone hook takıldı")
 
 
-def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None) -> np.ndarray:
+def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None,
+                        enable_gradcam: bool = False, top_k: int = 1, max_side: int = 960) -> np.ndarray:
     """
     Faster R-CNN GradCAM — FPN backbone activation haritası.
     Hook her çağrıda takılıp sökülmez; startup'ta bir kez register edilir.
@@ -226,15 +300,112 @@ def gradcam_faster_rcnn(model, frame_bgr: np.ndarray, detections: list = None) -
     h, w = frame_bgr.shape[:2]
 
     try:
-        _ensure_frcnn_hook(model)  
+        # Keep legacy persistent hook but also support one-shot gradcam via temporary hooks
+        _ensure_frcnn_hook(model)
 
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        
+        # Decide whether to attempt real Grad-CAM: only if explicitly enabled
+        use_real_gradcam = bool(enable_gradcam) and bool(detections)
+        proc_frame = frame_bgr
+        if max_side is not None:
+            h0, w0 = frame_bgr.shape[:2]
+            scale = min(1.0, float(max_side) / max(h0, w0))
+            if scale < 1.0:
+                proc_frame = cv2.resize(frame_bgr, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_LINEAR)
+
+        print(f"[GRADCAM FRCNN] enabled={enable_gradcam} detections={bool(detections)} in_shape={frame_bgr.shape} proc_shape={proc_frame.shape}")
+        activations = {}
+        grads = {}
+        temp_handle = None
+
+        def _temp_hook(module, input, output):
+            tensor = None
+            if isinstance(output, torch.Tensor):
+                tensor = output
+            elif isinstance(output, (list, tuple)) and output:
+                for item in output:
+                    if isinstance(item, torch.Tensor):
+                        tensor = item
+                        break
+            elif isinstance(output, dict):
+                for v in output.values():
+                    if isinstance(v, torch.Tensor):
+                        tensor = v
+                        break
+
+            if tensor is None:
+                return
+
+            activations[0] = tensor
+
+            def _record_grad(g):
+                grads[0] = g.detach()
+
+            try:
+                tensor.register_hook(_record_grad)
+            except Exception:
+                pass
+
+        if use_real_gradcam:
+            try:
+                temp_handle = model.backbone.register_forward_hook(_temp_hook)
+            except Exception:
+                temp_handle = None
+
+        frame_rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
         img_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float().div(255.0).to(device)
 
         model.eval()
-        with torch.no_grad():
-            _ = model([img_tensor])
+
+        if use_real_gradcam:
+            # run forward with grad tracking to get target score
+            try:
+                img_tensor.requires_grad_(True)
+                outputs = model([img_tensor])
+
+                # select a target score S: prefer highest detection score
+                S = None
+                try:
+                    if isinstance(outputs, (list, tuple)) and outputs:
+                        out0 = outputs[0]
+                        if isinstance(out0, dict) and 'scores' in out0:
+                            S = out0['scores'].max()
+                        elif isinstance(out0, list) and out0 and 'scores' in out0[0]:
+                            S = out0[0]['scores'].max()
+                except Exception:
+                    S = None
+
+                if S is None:
+                    # fallback to legacy no-grad path
+                    with torch.no_grad():
+                        _ = model([img_tensor])
+                else:
+                    model.zero_grad()
+                    S.backward(retain_graph=True)
+            except Exception:
+                with torch.no_grad():
+                    _ = model([img_tensor])
+        else:
+            with torch.no_grad():
+                _ = model([img_tensor])
+
+        # If real gradcam succeeded, try to use activations+grads
+        if use_real_gradcam and activations and grads:
+            try:
+                act = activations[0]
+                grad = grads.get(0, None)
+                if grad is not None:
+                    if act.dim() == 4:
+                        act = act[0]
+                    if grad.dim() == 4:
+                        grad = grad[0]
+                    cam_np = _safe_gradcam_computation(act, grad)
+                    if cam_np is not None:
+                        cam_resized = cv2.resize(cam_np.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+                        return _apply_colormap(cam_resized)
+            except Exception:
+                pass
+
+        # legacy fallback using persistent _frcnn_features
 
         if not _frcnn_features:
             print("[GRADCAM FASTER_RCNN] Feature yakalanamadı")

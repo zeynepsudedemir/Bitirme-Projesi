@@ -131,7 +131,7 @@ def get_metrics():
 from app.gradcam import gradcam_yolo, gradcam_faster_rcnn
 
 
-def _get_cached_gradcam(model_name: str, frame: np.ndarray) -> str | None:
+def _get_cached_gradcam(model_name: str, frame: np.ndarray, enable_gradcam: bool = False, detections: list = None) -> str | None:
 
     now = time.monotonic()
     cached = _gradcam_cache.get(model_name)
@@ -140,9 +140,9 @@ def _get_cached_gradcam(model_name: str, frame: np.ndarray) -> str | None:
 
     try:
         if model_name in ("yolov8", "yolov5"):
-            heatmap = gradcam_yolo(models[model_name], frame)
+            heatmap = gradcam_yolo(models[model_name], frame, detections=detections, enable_gradcam=enable_gradcam)
         else:
-            heatmap = gradcam_faster_rcnn(models["faster_rcnn"], frame)
+            heatmap = gradcam_faster_rcnn(models["faster_rcnn"], frame, detections=detections, enable_gradcam=enable_gradcam)
 
         if heatmap is not None and heatmap.size > 0:
             _, buf = cv2.imencode(".jpg", heatmap, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -170,7 +170,12 @@ async def infer_gradcam(file: UploadFile, model_name: str = "yolov8", enable_gra
     detections, inference_ms = _run_inference(model_name, frame, frame_id)
     inference_ms = int((time.perf_counter() - t0) * 1000)
 
-    heatmap_b64 = _get_cached_gradcam(model_name, frame) if enable_gradcam else None
+    heatmap_b64 = None
+    if enable_gradcam:
+        heatmap_b64 = await asyncio.get_event_loop().run_in_executor(
+            executor,
+            lambda: _get_cached_gradcam(model_name, frame, enable_gradcam, detections)
+        )
 
     return JSONResponse({
         "frame_id": frame_id,
@@ -247,7 +252,7 @@ async def infer_sync(
     if enable_gradcam:
         heatmap_b64 = await asyncio.get_event_loop().run_in_executor(
             executor,
-            lambda: _get_cached_gradcam(model_name, frame)
+            lambda: _get_cached_gradcam(model_name, frame, enable_gradcam, detections)
         )
 
     return JSONResponse({
