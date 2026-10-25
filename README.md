@@ -1,6 +1,6 @@
 # DroneVision — Aerial Object Detection Platform
 
-## 🎥 Demo
+##  Demo
 
 
 https://github.com/user-attachments/assets/6f6fe8fe-5d89-47e9-8075-e6b3a2142bdf
@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/6f6fe8fe-5d89-47e9-8075-e6b3a2142bdf
 │  ┌──────────────┐    ┌────────────────────┐    ┌─────────────┐  │
 │  │   Frontend   │    │  Inference Service │    │  Auth       │  │
 │  │  (React/Vite)│◄──►│  FastAPI + PyTorch │◄──►│  Service    │  │
-│  │  (Planned)   │    │  Port: 8001        │    │  (Planned)  │  │
+│  │   Port:5173  │    │  Port: 8001        │    │  (Planned)  │  │
 │  └──────────────┘    └────────┬───────────┘    └─────────────┘  │
 │                               │                                 │
 │                    ┌──────────▼──────────┐                      │
@@ -55,7 +55,7 @@ All services communicate over the isolated `drone_net` Docker bridge network.
 | React dashboard with live visualization | ✅ Live |
 | Model confidence / class filtering | ✅ Live  |
 | SAHI (Sliced Aided Hyper Inference) | ✅ Live  |
-| Explainable AI — Grad-CAM overlays | ✅ Live |
+| Explainable AI — activation-map overlay (demo) | ✅ Live |
 | JWT / OAuth2 Auth Service | 🔧 In Progress |
 | Real-time RTSP stream ingestion | 🔧 In Progress |
 
@@ -247,7 +247,7 @@ CREATE TABLE detections (
 
 ### Phase 4 — Advanced AI 📋
 - [ ] SAHI integration for small object detection
-- [ ] Grad-CAM / XAI visualization overlay service
+- [ ] Gradient-based XAI (Grad-CAM) overlay service
 - [ ] Async batch inference endpoint
 - [ ] Model performance benchmarking panel
 
