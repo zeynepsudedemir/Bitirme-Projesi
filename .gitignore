@@ -9,7 +9,8 @@ venv/
 *.pt
 *.pth
 *.pth.tar
-models/
+services/inference-service/app/models/*
+!services/inference-service/app/models/metrics.json
 # Docker volumes
 postgres_data/
 
